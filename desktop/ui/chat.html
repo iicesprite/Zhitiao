@@ -118,9 +118,20 @@
       <button class="text-button" id="serve-share" type="button">管理设备分享</button>
     </div>
   </section>
+  <section id="updates-panel" class="setup serve-panel" aria-labelledby="updates-title" hidden>
+    <h2 id="updates-title">软件更新</h2>
+    <p id="update-version" class="meta"></p>
+    <p id="update-status" role="status" aria-live="polite"></p>
+    <div class="actions">
+      <button id="update-check" type="button">检查更新</button>
+      <button class="primary" id="update-restart" type="button" hidden>重启更新</button>
+      <button class="text-button" id="update-releases" type="button">查看发布页</button>
+    </div>
+  </section>
   <footer>
     <p id="feedback" role="status" aria-live="polite"></p>
     <div class="footer-tools">
+      <button class="text-button" id="updates" type="button" hidden>软件更新</button>
       <button class="text-button" id="network" type="button" hidden>异地连接</button>
       <button class="text-button" id="hide" type="button">收起桌宠</button>
     </div>

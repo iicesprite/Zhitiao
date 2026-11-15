@@ -26,6 +26,7 @@ let pairing = false;
 let quitting = false;
 let mayQuit = false;
 let serveBusy = false;
+let updates, updateReleasePage, readyCallback;
 
 function readSettings() {
   const dir = app.getPath('userData');
@@ -63,7 +64,7 @@ function saveConfig(next) {
 function viewState() {
   return { ...state, connection, hidden: prefs.hidden, configured: Boolean(config?.ready),
     canInvite: Boolean(config?.ready && config.role === 1 && !state.partner), role: config?.role,
-    tailscaleAvailable: windowsServer, servePorts: prefs.serve };
+    tailscaleAvailable: windowsServer, servePorts: prefs.serve, updates: updates?.state() };
 }
 
 function broadcast() {
@@ -342,6 +343,20 @@ function registerIpc() {
         case 'serve-share':
           if (!tailscale || event.sender !== chat.webContents) throw new Error('请从 Windows 的纸条面板操作。');
           return await handleServe(action, payload);
+        case 'ui-ready':
+          if (event.sender === chat.webContents) readyCallback?.();
+          break;
+        case 'update-check':
+        case 'update-restart':
+        case 'update-releases':
+          if (!updates || event.sender !== chat.webContents) throw new Error('更新面板暂不可用。');
+          if (action === 'update-check') await updates.check();
+          if (action === 'update-releases') await shell.openExternal(updateReleasePage);
+          if (action === 'update-restart' && updates.state().readyVersion) {
+            app.relaunch();
+            app.quit();
+          }
+          break;
         default:
           throw new Error('无法识别这个操作。');
       }
@@ -352,12 +367,16 @@ function registerIpc() {
   });
 }
 
-if (!app.requestSingleInstanceLock()) app.quit();
-else {
+function launch({ updater, releasePage, ready, failed } = {}) {
+  if (!app.hasSingleInstanceLock() && !app.requestSingleInstanceLock()) return app.quit();
+  updates = updater;
+  updateReleasePage = releasePage;
+  readyCallback = ready;
   app.on('second-instance', () => { if (chat) openChat(); });
   app.on('activate', () => { if (chat) openChat(); });
   app.on('before-quit', (event) => {
     quitting = true;
+    updates?.stop();
     if (mayQuit || !link) return;
     event.preventDefault();
     mayQuit = true;
@@ -384,8 +403,14 @@ else {
     });
     beginLink();
     if (!config?.ready) chat.once('ready-to-show', openChat);
+    updates?.onChange(broadcast);
+    updates?.start();
   }).catch((error) => {
     console.error(error);
-    app.quit();
+    if (failed) failed();
+    else app.quit();
   });
 }
+
+if (require.main === module) launch();
+module.exports = { launch };

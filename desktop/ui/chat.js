@@ -11,6 +11,8 @@ let noteSignature = '';
 let partnerFocus = null;
 let feedbackTimer;
 let showServe = false;
+let showUpdates = false;
+let updateBusy = false;
 let initializedPorts = false;
 let serveLoading = false;
 let serveState = null;
@@ -90,14 +92,22 @@ function render(info = data) {
   $('network').hidden = !info.tailscaleAvailable;
   $('network').textContent = showServe ? '返回纸条' : '异地连接';
   $('serve-panel').hidden = !showServe;
-  $('setup').hidden = showServe || info.configured;
-  $('waiting').hidden = showServe || !info.configured || info.partner !== null;
-  $('room').hidden = showServe || !info.partner;
+  $('updates').hidden = !info.updates;
+  $('updates').textContent = showUpdates ? '返回纸条' : info.updates?.readyVersion ? '新版已就绪' : '软件更新';
+  $('updates-panel').hidden = !showUpdates;
+  $('update-version').textContent = info.updates ? '当前版本 ' + info.updates.version : '';
+  $('update-status').textContent = info.updates?.message ?? '';
+  $('update-restart').hidden = !info.updates?.readyVersion;
+  $('update-check').disabled = updateBusy;
+  const panelOpen = showServe || showUpdates;
+  $('setup').hidden = panelOpen || info.configured;
+  $('waiting').hidden = panelOpen || !info.configured || info.partner !== null;
+  $('room').hidden = panelOpen || !info.partner;
   $('copy-invite').hidden = !info.canInvite;
   $('subtitle').textContent = info.partner ? info.me.name + ' 和 ' + info.partner.name : '两个人的收件箱';
   $('avatar').src = info.role === 2 ? 'bunny.svg' : 'pet.svg';
   $('hide').hidden = info.hidden;
-  if (showServe) return;
+  if (panelOpen) return;
   if (!info.partner) {
     if (info.configured) feedback(info.connection);
     return;
@@ -261,6 +271,7 @@ async function serveAction(action) {
 }
 
 $('network').addEventListener('click', () => {
+  showUpdates = false;
   showServe = !showServe;
   if (showServe && !initializedPorts) {
     const form = $('serve-form');
@@ -289,5 +300,23 @@ for (const action of ['serve-install', 'serve-dns', 'serve-share']) {
   $(action).addEventListener('click', () => act(action));
 }
 
+$('updates').addEventListener('click', () => {
+  showServe = false;
+  showUpdates = !showUpdates;
+  render();
+});
+$('update-check').addEventListener('click', async () => {
+  updateBusy = true;
+  render();
+  await act('update-check');
+  updateBusy = false;
+  render();
+});
+$('update-restart').addEventListener('click', () => act('update-restart'));
+$('update-releases').addEventListener('click', () => act('update-releases'));
+
 window.paper.onState(render);
-window.paper.current().then(render);
+window.paper.current().then((info) => {
+  render(info);
+  return window.paper.act('ui-ready');
+});

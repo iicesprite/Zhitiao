@@ -53,3 +53,15 @@ Windows 便携版可以解压后运行 Zhitiao.exe。Apple 芯片 Mac 安装包�
 在 Windows 上运行 npm run build:win 可以从源码生成安装程序。在 Apple 芯片 Mac 上运行 npm run build:mac 生成包含 .app 的 ZIP。输出在 dist。Mac 私用构建使用临时签名，从网络分享后可能需要在目标 Mac 的「隐私与安全性」中允许打开。
 
 运行 npm test 验证配对、离线拦截、闭关暂存、解除请求和过期行为。桌宠图案和拖动交互来自 PetLink，许可证见 THIRD-PARTY-NOTICES.txt。
+
+## 自动更新
+
+从 0.3.0 开始，安装版在启动后和后台定时检查 GitHub Releases。签名通过的新版会自动下载，下次打开桌宠时生效，也可以在「软件更新」里点「重启更新」。配对信息保存在本机应用数据目录里。Mac 从 0.2.0 升到 0.3.0 时，先退出旧桌宠，再运行 0.3.0 的安装程序，它会替换旧应用。
+
+发布同一 Electron 版本的后续桌宠更新：
+
+1. 修改代码并提升 package.json 中的版本号，例如运行 npm version patch --no-git-tag-version。测试后提交源码。
+2. 在保有原签名私钥的电脑上运行 npm run update:package。它会在 dist 打出版本对应的 .asar 和 zhitiao-update.json。
+3. 在 [GitHub Releases](https://github.com/iicesprite/Zhitiao/releases) 创建并发布对应标签（例如 v0.3.1），把这两个文件作为附件上传。更新仅检查正式发布版本，Git 推送本身不会触发。
+
+初次配置签名时运行 npm run update:key。项目内置桌宠用来验签的公钥，私钥存放在本机 data/update-signing-key.pem，需要单独备份并妥善保管。更换私钥后，老安装包无法验签；升级 Electron 本身时也需要提供新的完整安装包。
