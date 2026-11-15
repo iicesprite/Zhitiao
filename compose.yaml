@@ -1,0 +1,26 @@
+services:
+  notes:
+    build: .
+    restart: unless-stopped
+    environment:
+      ZHITIAO_SETUP_KEY: ${ZHITIAO_SETUP_KEY:?请设置服务端设置码}
+    volumes:
+      - notes_data:/state
+  https:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - notes
+    environment:
+      ZHITIAO_DOMAIN: ${ZHITIAO_DOMAIN:?请设置公网域名}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+volumes:
+  notes_data:
+  caddy_data:
+  caddy_config:

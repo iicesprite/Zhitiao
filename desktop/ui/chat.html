@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>纸条桌宠</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="chat.js"></script>
+</head>
+<body class="chat">
+  <header class="masthead">
+    <div>
+      <p id="subtitle">两个人的收件箱</p>
+      <h1>纸条</h1>
+    </div>
+    <img id="avatar" src="pet.svg" alt="" width="54" height="54">
+  </header>
+
+  <section id="setup" class="setup" hidden>
+    <div class="tabs" role="group" aria-label="配对方式">
+      <button type="button" data-tab="join" aria-pressed="true">我有邀请码</button>
+      <button type="button" data-tab="create" aria-pressed="false">创建配对</button>
+    </div>
+    <form id="pair-form">
+      <label>昵称<input name="name" maxlength="32" placeholder="对方怎么称呼你" required></label>
+      <div id="join-fields">
+        <label>邀请码<textarea name="invite" rows="3" maxlength="1300" placeholder="粘贴对方给你的整段邀请码" required></textarea></label>
+      </div>
+      <div id="create-fields" hidden>
+        <label>服务地址<input name="url" type="url" maxlength="512" placeholder="https://notes.example.com" disabled required></label>
+        <label>服务端设置码<input name="setupKey" type="password" maxlength="256" placeholder="由部署者提供" disabled></label>
+      </div>
+      <button class="primary full" type="submit" id="pair-submit">完成配对</button>
+    </form>
+  </section>
+
+  <section id="waiting" class="empty-space" hidden>
+    <h2>等对方来配对</h2>
+    <p>把邀请码发给对方，配对后就能互相递纸条。</p>
+    <button class="primary" id="copy-invite">复制邀请码</button>
+  </section>
+
+  <main id="room" hidden>
+    <div class="status-board">
+      <div>
+        <span class="eyebrow">你</span>
+        <strong id="my-status">—</strong>
+      </div>
+      <div>
+        <span id="partner-name" class="eyebrow">对方</span>
+        <strong id="partner-status">—</strong>
+      </div>
+    </div>
+    <div id="focus-tools" class="actions">
+      <button data-focus="hour">闭关 1 小时</button>
+      <button data-focus="manual">一直闭关</button>
+      <button id="finish" class="primary" hidden>结束闭关</button>
+      <button id="ask" class="text-button" hidden>申请解除</button>
+    </div>
+    <form id="request-form" class="aside" hidden>
+      <label>附一句原因（可选）
+        <input id="reason" type="text" maxlength="180" placeholder="想和 TA 说什么？">
+      </label>
+      <div class="actions">
+        <button class="primary" type="submit" id="ask-submit">发送请求</button>
+        <button type="button" id="ask-cancel">取消</button>
+      </div>
+    </form>
+    <section id="incoming" class="aside" hidden>
+      <strong id="incoming-title"></strong>
+      <p id="incoming-text" hidden></p>
+      <div class="actions">
+        <button class="primary" data-answer="accept">结束闭关</button>
+        <button data-answer="decline">继续闭关</button>
+      </div>
+    </section>
+    <p class="meta" id="outgoing" hidden></p>
+    <div class="note-label">
+      <h2>纸条</h2>
+      <span>送达后保留 7 天</span>
+    </div>
+    <div id="notes" aria-label="纸条记录" tabindex="0"></div>
+    <form id="compose" class="compose">
+      <textarea aria-label="纸条内容" id="draft" maxlength="1200" rows="2" placeholder="写张纸条…" required></textarea>
+      <button class="primary" type="submit" id="send">递纸条</button>
+    </form>
+    <p id="compose-status" class="meta"></p>
+  </main>
+
+  <section id="serve-panel" class="setup serve-panel" aria-labelledby="serve-title" hidden>
+    <h2 id="serve-title">Tailscale 私有连接</h2>
+    <form id="serve-form">
+      <div class="serve-ports">
+        <label>纸条服务端口<input name="localPort" type="number" min="1" max="65535" value="8787" required></label>
+        <label>HTTPS 入口端口<input name="httpsPort" type="number" min="1" max="65535" value="443" required></label>
+      </div>
+      <p class="meta">纸条服务端口要与本机 HTTP 服务监听的端口一致。</p>
+      <code id="serve-command" aria-label="启动命令"></code>
+      <div class="actions">
+        <button class="primary" id="serve-start" type="submit">启动 Serve</button>
+        <button id="serve-refresh" type="button">检查状态</button>
+        <button id="serve-stop" type="button" hidden>停止 Serve</button>
+      </div>
+    </form>
+    <p id="serve-status" role="status" aria-live="polite"></p>
+    <section id="serve-address" class="aside" hidden>
+      <label for="serve-url">私有 HTTPS 地址</label>
+      <input id="serve-url" readonly>
+      <div class="actions">
+        <button id="serve-copy-url" type="button">复制地址</button>
+        <button id="serve-copy-invite" type="button" disabled>复制异地邀请码</button>
+      </div>
+    </section>
+    <div class="actions serve-links">
+      <button class="text-button" id="serve-install" type="button">安装 Tailscale</button>
+      <button class="text-button" id="serve-dns" type="button">HTTPS 设置</button>
+      <button class="text-button" id="serve-share" type="button">管理设备分享</button>
+    </div>
+  </section>
+  <footer>
+    <p id="feedback" role="status" aria-live="polite"></p>
+    <div class="footer-tools">
+      <button class="text-button" id="network" type="button" hidden>异地连接</button>
+      <button class="text-button" id="hide" type="button">收起桌宠</button>
+    </div>
+  </footer>
+</body>
+</html>

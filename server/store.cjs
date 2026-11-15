@@ -1,0 +1,224 @@
+const { DatabaseSync } = require('node:sqlite');
+const { createHash, randomUUID, timingSafeEqual } = require('node:crypto');
+
+const HOUR = 60 * 60 * 1000;
+const KEEP = 7 * 24 * HOUR;
+const hash = (value) => createHash('sha256').update(value).digest('hex');
+const isSecret = (value) => typeof value === 'string' && /^[\w-]{43}$/.test(value);
+const isId = (value) => typeof value === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(value);
+
+class RequestError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function need(ok, status, message) {
+  if (!ok) throw new RequestError(status, message);
+}
+
+function nickname(value) {
+  need(typeof value === 'string' && value.trim() && [...value.trim()].length <= 16,
+    400, '请输入 1 到 16 个字的昵称。');
+  return value.trim();
+}
+
+function checkSealed(value, maxBytes) {
+  need(typeof value === 'string' && value.length >= 38
+    && value.length <= Math.ceil((28 + maxBytes) * 4 / 3) && /^[\w-]+$/.test(value),
+  400, '纸条内容无效。');
+  return value;
+}
+
+function schema(db) {
+  db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA secure_delete = ON;');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS people (
+      id INTEGER PRIMARY KEY CHECK (id IN (1, 2)),
+      name TEXT NOT NULL,
+      token_hash TEXT UNIQUE NOT NULL,
+      focus_id TEXT,
+      focus_until INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS invite (
+      slot INTEGER PRIMARY KEY CHECK (slot = 1),
+      code_hash TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id TEXT NOT NULL,
+      sender INTEGER NOT NULL REFERENCES people(id),
+      recipient INTEGER NOT NULL REFERENCES people(id),
+      content TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      focus_id TEXT,
+      available_at INTEGER,
+      delivered_at INTEGER,
+      UNIQUE (sender, client_id)
+    );
+    CREATE TABLE IF NOT EXISTS requests (
+      id TEXT PRIMARY KEY,
+      sender INTEGER NOT NULL REFERENCES people(id),
+      recipient INTEGER NOT NULL REFERENCES people(id),
+      focus_id TEXT NOT NULL,
+      content TEXT,
+      created_at INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined', 'expired')),
+      resolved_at INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS only_one_pending
+      ON requests(recipient) WHERE status = 'pending';
+  `);
+}
+
+function openStore(path, { now = Date.now, setupKey = '' } = {}) {
+  const db = new DatabaseSync(path);
+  schema(db);
+  const get = (sql, ...args) => db.prepare(sql).get(...args);
+  const all = (sql, ...args) => db.prepare(sql).all(...args);
+  const run = (sql, ...args) => db.prepare(sql).run(...args).changes;
+
+  function transaction(callback) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = callback();
+      db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  function create(body) {
+    if (setupKey) {
+      need(typeof body.setupKey === 'string'
+        && timingSafeEqual(Buffer.from(hash(body.setupKey)), Buffer.from(hash(setupKey))),
+      403, '服务端设置码不正确。');
+    }
+    const name = nickname(body.name);
+    need(isSecret(body.token) && isSecret(body.code), 400, '配对凭据无效。');
+    return transaction(() => {
+      const owner = get('SELECT token_hash FROM people WHERE id = 1');
+      if (owner?.token_hash === hash(body.token)) return { ok: true };
+      need(!owner, 409, '这个服务已创建配对，请使用对方的邀请。');
+      run('INSERT INTO people (id, name, token_hash) VALUES (1, ?, ?)', name, hash(body.token));
+      run('INSERT INTO invite (slot, code_hash) VALUES (1, ?)', hash(body.code));
+      return { ok: true };
+    });
+  }
+
+  function join(body) {
+    const name = nickname(body.name);
+    need(isSecret(body.code) && isSecret(body.token), 400, '邀请码格式不正确。');
+    return transaction(() => {
+      const member = get('SELECT token_hash FROM people WHERE id = 2');
+      if (member?.token_hash === hash(body.token)) return { ok: true };
+      need(get('SELECT slot FROM invite WHERE code_hash = ?', hash(body.code)), 403, '邀请码无效或已经使用。');
+      run('INSERT INTO people (id, name, token_hash) VALUES (2, ?, ?)', name, hash(body.token));
+      run('DELETE FROM invite');
+      return { ok: true };
+    });
+  }
+
+  function authenticate(token) {
+    if (isSecret(token)) {
+      const member = get('SELECT id FROM people WHERE token_hash = ?', hash(token));
+      if (member) return member.id;
+    }
+    throw new RequestError(401, '配对凭据无效。');
+  }
+
+  function finishFocus(member, time, acceptedId = null) {
+    run('UPDATE people SET focus_id = NULL, focus_until = NULL WHERE id = ?', member.id);
+    run('UPDATE notes SET available_at = ? WHERE recipient = ? AND focus_id = ? AND available_at IS NULL',
+      time, member.id, member.focus_id);
+    run("UPDATE requests SET status = CASE WHEN id = ? THEN 'accepted' ELSE 'expired' END, resolved_at = ? WHERE recipient = ? AND focus_id = ? AND status = 'pending'",
+      acceptedId, time, member.id, member.focus_id);
+  }
+
+  function maintain() {
+    const time = now();
+    const expired = all('SELECT id, focus_id FROM people WHERE focus_until <= ?', time);
+    const removed = transaction(() => {
+      for (const member of expired) finishFocus(member, time);
+      const notes = run('DELETE FROM notes WHERE delivered_at <= ?', time - KEEP);
+      const requests = run('DELETE FROM requests WHERE resolved_at <= ?', time - KEEP);
+      return notes + requests;
+    });
+    return expired.length > 0 || removed > 0;
+  }
+
+  function state(id, revision) {
+    const me = get('SELECT id, name, focus_id AS focusId, focus_until AS focusUntil FROM people WHERE id = ?', id);
+    const other = 3 - id;
+    const partner = get('SELECT id, name, focus_id AS focusId, focus_until AS focusUntil FROM people WHERE id = ?', other) ?? null;
+    const notes = all('SELECT id, client_id AS clientId, sender, content, created_at AS createdAt, focus_id AS focusId, available_at AS availableAt, delivered_at AS deliveredAt FROM notes WHERE sender = ? OR (recipient = ? AND available_at IS NOT NULL) ORDER BY id', id, id);
+    const incoming = get("SELECT id, content, created_at AS createdAt FROM requests WHERE recipient = ? AND status = 'pending'", id) ?? null;
+    const outgoing = get('SELECT id, status FROM requests WHERE sender = ? ORDER BY rowid DESC LIMIT 1', id) ?? null;
+    return { revision, time: now(), me, partner, notes, incoming, outgoing };
+  }
+
+  function command(id, body) {
+    const time = now();
+    return transaction(() => {
+      const me = get('SELECT id, focus_id FROM people WHERE id = ?', id);
+      const partner = get('SELECT id, focus_id FROM people WHERE id = ?', 3 - id);
+      switch (body.action) {
+        case 'start':
+          need(!me.focus_id, 409, '你已经在闭关。');
+          need(body.mode === 'hour' || body.mode === 'manual', 400, '闭关时长无效。');
+          run('UPDATE people SET focus_id = ?, focus_until = ? WHERE id = ?', randomUUID(),
+            body.mode === 'hour' ? time + HOUR : null, id);
+          return true;
+        case 'finish':
+          if (!me.focus_id) return false;
+          finishFocus(me, time);
+          return true;
+        case 'send': {
+          need(partner, 409, '配对后就能递纸条。');
+          need(isId(body.clientId), 400, '纸条编号无效。');
+          const content = checkSealed(body.content, 2400);
+          return run('INSERT INTO notes (client_id, sender, recipient, content, created_at, focus_id, available_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(sender, client_id) DO NOTHING',
+            body.clientId, id, partner.id, content, time, partner.focus_id, partner.focus_id ? null : time) > 0;
+        }
+        case 'request': {
+          need(partner?.focus_id, 409, '对方已经出关了。');
+          need(body.focusId === partner.focus_id, 409, '闭关状态已更新，请重新申请。');
+          const pending = get("SELECT id FROM requests WHERE recipient = ? AND status = 'pending'", partner.id);
+          need(!pending, 409, '已经有一个待处理的解除请求。');
+          const content = body.content == null ? null : checkSealed(body.content, 360);
+          run("INSERT INTO requests (id, sender, recipient, focus_id, content, created_at, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')",
+            randomUUID(), id, partner.id, partner.focus_id, content, time);
+          return true;
+        }
+        case 'answer': {
+          need(body.decision === 'accept' || body.decision === 'decline', 400, '请选择是否结束闭关。');
+          const pending = get("SELECT id FROM requests WHERE id = ? AND recipient = ? AND focus_id = ? AND status = 'pending'",
+            typeof body.id === 'string' ? body.id : '', id, me.focus_id);
+          need(pending, 409, '这条解除请求已处理或失效。');
+          if (body.decision === 'accept') finishFocus(me, time, pending.id);
+          else run("UPDATE requests SET status = 'declined', resolved_at = ? WHERE id = ?", time, pending.id);
+          return true;
+        }
+        case 'ack': {
+          need(Array.isArray(body.ids) && body.ids.length <= 200
+            && body.ids.every((value) => Number.isSafeInteger(value) && value > 0), 400, '纸条回执无效。');
+          const ack = db.prepare('UPDATE notes SET delivered_at = ? WHERE id = ? AND recipient = ? AND available_at IS NOT NULL AND delivered_at IS NULL');
+          let updated = false;
+          for (const noteId of body.ids) {
+            if (ack.run(time, noteId, id).changes) updated = true;
+          }
+          return updated;
+        }
+        default:
+          throw new RequestError(400, '无法识别该操作。');
+      }
+    });
+  }
+
+  return { create, join, authenticate, maintain, state, command, close: () => db.close() };
+}
+
+module.exports = { openStore, RequestError, HOUR, KEEP };

@@ -1,0 +1,3 @@
+{$ZHITIAO_DOMAIN} {
+    reverse_proxy notes:8787
+}

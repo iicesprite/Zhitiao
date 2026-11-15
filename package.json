@@ -1,0 +1,37 @@
+{
+  "name": "zhitiao-pet",
+  "productName": "纸条桌宠",
+  "version": "0.2.0",
+  "private": true,
+  "description": "两个人的桌面纸条",
+  "author": "纸条桌宠",
+  "main": "desktop/main.cjs",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "electron .",
+    "server": "node server/http.cjs",
+    "test": "node --test test/*.test.cjs",
+    "build:win": "electron-builder --win nsis --x64",
+    "build:mac": "electron-builder --mac zip --arm64"
+  },
+  "devDependencies": {
+    "electron": "45.3.2",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "local.zhitiao.desktop",
+    "files": ["desktop/**", "shared/**", "THIRD-PARTY-NOTICES.txt"],
+    "directories": { "output": "dist" },
+    "win": {
+      "icon": "desktop/ui/icon.png",
+      "artifactName": "zhitiao-${version}-windows-${arch}.${ext}"
+    },
+    "mac": {
+      "icon": "desktop/ui/icon.icns",
+      "category": "public.app-category.social-networking",
+      "identity": "-",
+      "artifactName": "zhitiao-${version}-mac-${arch}.${ext}"
+    },
+    "nsis": { "oneClick": true, "perMachine": false }
+  }
+}

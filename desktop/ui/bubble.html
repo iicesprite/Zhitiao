@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'">
+  <title>纸条提醒</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="bubble.js"></script>
+</head>
+<body class="bubble">
+  <section id="bubble-card" hidden>
+    <button type="button" id="dismiss" aria-label="收起提示" title="收起提示">×</button>
+    <h2 id="title"></h2>
+    <p id="text" hidden></p>
+    <div id="request-actions" class="actions" hidden>
+      <button class="primary" data-answer="accept">结束闭关</button>
+      <button data-answer="decline">继续闭关</button>
+    </div>
+    <button id="open" class="primary">查看纸条</button>
+    <p id="error" role="alert" hidden></p>
+  </section>
+</body>
+</html>
