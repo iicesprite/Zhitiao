@@ -8,12 +8,14 @@ function seal(text, key, purpose) {
   return Buffer.concat([iv, cipher.getAuthTag(), body]).toString('base64url');
 }
 
-function unseal(value, key, purpose) {
+function openBytes(value, key, purpose) {
   const data = Buffer.from(value, 'base64url');
   const decipher = createDecipheriv('aes-256-gcm', Buffer.from(key, 'base64url'), data.subarray(0, 12));
   decipher.setAAD(Buffer.from(purpose));
   decipher.setAuthTag(data.subarray(12, 28));
-  return Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]).toString('utf8');
+  return Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]);
 }
 
-module.exports = { seal, unseal };
+const unseal = (value, key, purpose) => openBytes(value, key, purpose).toString('utf8');
+
+module.exports = { seal, unseal, openBytes };

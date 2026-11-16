@@ -9,13 +9,10 @@ function render(value) {
   $('title').textContent = alert.title;
   $('text').textContent = alert.text || '';
   $('text').hidden = !alert.text;
-  $('request-actions').hidden = alert.kind !== 'request';
-  $('open').hidden = alert.kind === 'request';
   $('error').hidden = true;
 }
 
 $('dismiss').addEventListener('click', () => window.paper.act('dismiss'));
-$('open').addEventListener('click', () => window.paper.act('open'));
 for (const button of answer) {
   button.addEventListener('click', async () => {
     if (!alert?.id) return;

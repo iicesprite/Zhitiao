@@ -4,6 +4,7 @@ const { EventEmitter } = require('node:events');
 const { mkdirSync } = require('node:fs');
 const { dirname, resolve } = require('node:path');
 const { openStore, RequestError } = require('./store.cjs');
+const { imageRequestLimit } = require('../shared/media.cjs');
 
 function json(response, status, value) {
   response.writeHead(status, {
@@ -14,7 +15,7 @@ function json(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
-async function readBody(request) {
+async function readBody(request, max = 16 * 1024) {
   if (request.headers['content-type'] !== 'application/json') {
     throw new RequestError(415, '请求必须是 JSON。');
   }
@@ -22,7 +23,7 @@ async function readBody(request) {
   let size = 0;
   for await (const part of request) {
     size += part.length;
-    if (size > 16 * 1024) throw new RequestError(413, '请求内容过长。');
+    if (size > max) throw new RequestError(413, '请求内容过长。');
     parts.push(part);
   }
   try {
@@ -120,11 +121,20 @@ function createNoteServer({ dbPath, setupKey, now, waitMs = 5000, presenceMs = 1
         return json(response, 200, { ok: true });
       }
 
-      if (request.method === 'POST' && url.pathname === '/api/command') {
+      const imageGet = /^\/api\/images\/([1-9]\d{0,14})$/.exec(url.pathname);
+      if (request.method === 'GET' && imageGet) {
         const id = authenticate(request);
-        const body = await readBody(request);
         maintain();
-        if (['send', 'request'].includes(body.action) && !online.has(3 - id)) {
+        return json(response, 200, store.imageFor(id, Number(imageGet[1])));
+      }
+      if (request.method === 'POST' && ['/api/command', '/api/images'].includes(url.pathname)) {
+        const id = authenticate(request);
+        const withImage = url.pathname === '/api/images';
+        const body = await readBody(request, withImage ? imageRequestLimit : undefined);
+        if (withImage) body.action = 'send-image';
+        else if (body.action === 'send-image') throw new RequestError(400, '请使用图片发送入口。');
+        maintain();
+        if (['send', 'send-image', 'request'].includes(body.action) && !online.has(3 - id)) {
           throw new RequestError(409, '对方离线，等 TA 上线后再发吧。');
         }
         if (store.command(id, body)) publish();

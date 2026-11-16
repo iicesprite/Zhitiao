@@ -8,7 +8,14 @@
   <script defer src="pet.js"></script>
 </head>
 <body class="pet">
-  <button id="pet-button" aria-label="打开纸条" title="点一下打开纸条，可以拖动桌宠">
+  <section id="pet-speech" hidden>
+    <div aria-live="polite" aria-atomic="true">
+      <h2 id="pet-speech-title"></h2>
+      <p id="pet-speech-text" hidden></p>
+    </div>
+    <button id="pet-speech-open" class="text-button" type="button">查看纸条</button>
+  </section>
+  <button id="pet-button" aria-label="单击看心情，双击打开纸条" title="单击看心情，双击打开纸条，可以拖动桌宠">
     <img id="avatar" src="pet.svg" width="74" height="74" alt="" draggable="false">
     <span id="pet-status">纸条</span>
   </button>

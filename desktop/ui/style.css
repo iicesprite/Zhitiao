@@ -13,7 +13,7 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { margin: 0; }
-button, input, textarea { font: inherit; }
+button, input, textarea, select { font: inherit; }
 button {
   border: 1px solid var(--border);
   border-radius: 9px;
@@ -24,7 +24,7 @@ button {
 }
 button:hover { border-color: #a8836e; }
 button:disabled { cursor: default; opacity: .56; }
-button:focus-visible, input:focus-visible, textarea:focus-visible, #notes:focus-visible {
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, #notes:focus-visible {
   outline: 2px solid #985e49;
   outline-offset: 2px;
 }
@@ -46,7 +46,7 @@ p, h1, h2 { margin: 0; }
 .masthead h1 { font-family: "Songti SC", "SimSun", serif; letter-spacing: .10em; font-size: 36px; line-height: 1.25; margin-top: 1px; }
 .masthead img, .pet img { image-rendering: pixelated; }
 .chat form label { display: grid; gap: 6px; color: var(--ink-soft); }
-.chat input, .chat textarea {
+.chat input, .chat textarea, .chat select {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 9px;
@@ -74,9 +74,9 @@ p, h1, h2 { margin: 0; }
 .empty-space { padding: 25px 8px; }
 .empty-space h2 { font-size: 17px; }
 .empty-space p { margin: 8px 0 16px; color: var(--ink-soft); }
-#room { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#room { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
 .status-board { display: grid; grid-template-columns: 1fr 1fr; background: #efe6d8; border-radius: 12px; }
-.status-board > div { display: grid; gap: 5px; padding: 10px 12px; min-width: 0; }
+.status-board > div { display: grid; align-content: start; gap: 5px; padding: 10px 12px; min-width: 0; }
 .status-board > div + div { border-left: 1px solid #dfcebb; }
 .status-board .eyebrow { color: var(--ink-soft); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-board strong { font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
@@ -103,8 +103,16 @@ p, h1, h2 { margin: 0; }
 .note:last-child { margin-bottom: 0; }
 .note time { font-size: 10px; color: var(--ink-soft); display: block; margin-bottom: 4px; }
 .note p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.note-image { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; width: 206px; max-width: 100%; height: 142px; margin-top: 5px; border-radius: 7px; overflow: hidden; background: #f3e9dd; }
+.note-image img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.note-image button { font-size: 12px; }
 .compose { display: grid; grid-template-columns: 1fr auto; align-items: stretch; gap: 7px; margin-top: 8px; }
 .compose .primary { padding-inline: 10px; }
+.compose-actions { display: grid; gap: 1px; align-content: end; }
+.compose-actions .text-button { padding: 4px 5px; font-size: 12px; }
+.attachment { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 7px; min-width: 0; padding: 0 6px; font-size: 12px; color: var(--ink-soft); background: #efe6d8; border-radius: 7px; }
+.attachment span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment button { flex: 0 0 auto; padding-block: 3px; }
 #compose-status { margin: 5px 2px 0; }
 footer { margin-top: auto; padding-top: 5px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 footer button { flex-shrink: 0; padding: 5px; }
@@ -112,11 +120,16 @@ footer button { flex-shrink: 0; padding: 5px; }
 #feedback { font-size: 12px; color: #734435; min-height: 1em; overflow-wrap: anywhere; }
 .pet, .bubble { background: transparent; overflow: hidden; }
 .pet { user-select: none; }
-#pet-button { display: grid; align-content: center; justify-items: center; gap: 2px; width: 104px; height: 110px; padding: 2px; cursor: grab; border: none; background: transparent; }
+#pet-button { position: absolute; display: grid; align-content: center; justify-items: center; gap: 2px; width: 104px; height: 110px; padding: 2px; cursor: grab; border: none; background: transparent; }
 #pet-button:active { cursor: grabbing; }
 #pet-button img { filter: drop-shadow(0 5px 4px #2a171654); transition: transform .15s ease; }
 #pet-button:hover img { transform: translateY(-3px); }
 #pet-status { font-size: 11px; padding: 3px 8px; color: #463026; border-radius: 9px; background: #fff5e9; box-shadow: 0 1px 4px #29171045; white-space: nowrap; }
+#pet-speech { position: absolute; padding: 9px 12px; background: var(--card); border: 1px solid #cdb7a4; border-radius: 13px; box-shadow: 0 2px 5px #2c180b35; }
+#pet-speech::after { content: ''; position: absolute; left: calc(var(--tail-x) - 6px); bottom: -6px; width: 11px; height: 11px; border-right: 1px solid #cdb7a4; border-bottom: 1px solid #cdb7a4; background: var(--card); transform: rotate(45deg); }
+#pet-speech h2 { font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#pet-speech-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 17px; margin-top: 4px; }
+#pet-speech-open { font-size: 11px; padding: 3px 1px; margin-top: 3px; }
 #bubble-card { position: relative; margin: 8px; padding: 12px 14px; background: var(--card); border: 1px solid #cdb7a4; border-radius: 14px; box-shadow: 0 3px 7px #2c180b35; }
 #bubble-card h2 { font-size: 14px; margin: 0 24px 9px 0; overflow-wrap: anywhere; }
 #bubble-card p { margin-bottom: 8px; font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }

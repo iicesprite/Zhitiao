@@ -4,8 +4,11 @@ let data = null;
 let tab = 'join';
 let pairing = false;
 let sending = false;
+let pickingImage = false;
+let attachment = null;
 let requesting = false;
 let focusBusy = false;
+let moodBusy = false;
 let pendingDraft = null;
 let noteSignature = '';
 let partnerFocus = null;
@@ -16,6 +19,16 @@ let updateBusy = false;
 let initializedPorts = false;
 let serveLoading = false;
 let serveState = null;
+const imageViews = new Map();
+const imageObserver = new IntersectionObserver((entries) => {
+  for (const { target, isIntersecting } of entries) {
+    const view = imageViews.get(Number(target.dataset.noteId));
+    if (view?.container !== target) continue;
+    view.nearby = isIntersecting;
+    if (isIntersecting && !view.failed) loadNoteImage(view);
+    else if (!isIntersecting && view.image.hasAttribute('src')) resetNoteImage(view);
+  }
+}, { root: $('notes'), rootMargin: '80px' });
 
 function feedback(message) {
   clearTimeout(feedbackTimer);
@@ -54,14 +67,69 @@ function label(member, online, serverNow) {
   return minutes ? '闭关中 · 约 ' + minutes + ' 分钟' : '闭关即将结束';
 }
 
+function resetNoteImage(view) {
+  view.image.removeAttribute('src');
+  view.image.hidden = true;
+  view.button.hidden = false;
+  view.button.textContent = view.failed ? '重试加载图片' : '查看图片';
+}
+
+async function loadNoteImage(view) {
+  if (view.loading || view.image.hasAttribute('src')) return;
+  view.loading = true;
+  view.failed = false;
+  view.button.disabled = true;
+  view.button.textContent = '正在读取图片…';
+  try {
+    const result = await window.paper.act('note-image', { id: view.id });
+    if (!result.ok) throw new Error(result.error);
+    if (view.nearby && imageViews.has(view.id)) {
+      view.image.src = result.src;
+      view.image.hidden = false;
+      view.button.hidden = true;
+    }
+  } catch {
+    view.failed = true;
+  } finally {
+    view.loading = false;
+    view.button.disabled = false;
+    if (view.image.hidden) resetNoteImage(view);
+  }
+}
+
+function noteImage(id) {
+  const existing = imageViews.get(id);
+  if (existing) return existing.container;
+  const container = document.createElement('div');
+  container.className = 'note-image';
+  container.dataset.noteId = id;
+  const image = document.createElement('img');
+  image.alt = '纸条图片';
+  const button = document.createElement('button');
+  button.type = 'button';
+  const view = { id, container, image, button, nearby: false, loading: false, failed: false };
+  button.addEventListener('click', () => loadNoteImage(view));
+  image.addEventListener('error', () => {
+    if (!image.hasAttribute('src')) return;
+    view.failed = true;
+    resetNoteImage(view);
+  });
+  resetNoteImage(view);
+  container.append(image, button);
+  imageViews.set(id, view);
+  imageObserver.observe(container);
+  return container;
+}
+
 function renderNotes(info) {
-  const signature = info.notes.map((note) => [note.id, note.availableAt, note.deliveredAt].join('.')).join(',')
+  const signature = info.notes.map((note) => [note.id, note.availableAt, note.deliveredAt, note.hasImage].join('.')).join(',')
     + ':' + Boolean(info.me?.focusId);
   if (signature === noteSignature) return;
   noteSignature = signature;
   const panel = $('notes');
   const nearBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 55;
   const fragment = document.createDocumentFragment();
+  const activeImages = new Set();
   if (!info.notes.length) {
     const empty = document.createElement('p');
     empty.className = 'empty-note';
@@ -77,10 +145,23 @@ function renderNotes(info) {
     timestamp.dateTime = new Date(note.createdAt).toISOString();
     const status = note.availableAt === null ? ' · 已暂存' : note.deliveredAt ? ' · 已送达' : ' · 等待送达';
     timestamp.textContent = formatter.format(note.createdAt) + (mine ? status : '');
-    const text = document.createElement('p');
-    text.textContent = note.text;
-    card.append(timestamp, text);
+    card.append(timestamp);
+    if (!note.hasImage || note.text !== '[图片]') {
+      const text = document.createElement('p');
+      text.textContent = note.text;
+      card.append(text);
+    }
+    if (note.hasImage) {
+      card.append(noteImage(note.id));
+      activeImages.add(note.id);
+    }
     fragment.append(card);
+  }
+  for (const [id, view] of imageViews) {
+    if (!activeImages.has(id)) {
+      imageObserver.unobserve(view.container);
+      imageViews.delete(id);
+    }
   }
   panel.replaceChildren(fragment);
   if (nearBottom) panel.scrollTop = panel.scrollHeight;
@@ -117,6 +198,8 @@ function render(info = data) {
   const online = !info.connection && info.partner.online;
   const selfOnline = !info.connection;
   $('my-status').textContent = label(me, selfOnline, info.time);
+  $('my-mood').textContent = $('my-mood').title = me.mood?.label ?? '';
+  $('my-mood').hidden = !me.mood;
   $('partner-name').textContent = info.partner.name;
   $('partner-status').textContent = label(info.partner, online, info.time);
   for (const button of buttons('[data-focus]')) {
@@ -144,8 +227,15 @@ function render(info = data) {
   $('incoming-text').textContent = info.incoming?.text ?? '';
   $('incoming-text').hidden = !info.incoming?.text;
   for (const button of buttons('[data-answer]')) button.disabled = !selfOnline || focusBusy;
-  $('send').disabled = !online || sending || !$('draft').value.trim();
-  $('compose-status').textContent = info.connection || (online
+  $('mood-edit').disabled = moodBusy;
+  $('mood-save').disabled = !selfOnline || moodBusy;
+  $('attachment').hidden = !attachment;
+  $('attachment-name').textContent = $('attachment-name').title = attachment?.name ?? '';
+  $('attachment-remove').disabled = sending || pickingImage;
+  $('image-pick').disabled = sending || pickingImage;
+  $('draft').required = !attachment;
+  $('send').disabled = !online || sending || pickingImage || (!attachment && !$('draft').value.trim());
+  $('compose-status').textContent = sending && attachment ? '正在发送图片…' : info.connection || (online
     ? info.partner.focusId ? '这张纸条会在对方出关后送达。' : ''
     : '对方离线，等 TA 上线后再发。');
   renderNotes(info);
@@ -166,6 +256,28 @@ $('copy-invite').addEventListener('click', async () => {
   if (await act('copy')) feedback('已复制邀请码。');
 });
 $('hide').addEventListener('click', () => act('hide'));
+$('image-pick').addEventListener('click', async () => {
+  if (pickingImage || sending) return;
+  pickingImage = true;
+  feedback('');
+  render();
+  try {
+    const result = await window.paper.act('image-pick');
+    if (!result.ok) feedback(result.error ?? '暂时无法选择图片。');
+    else if (result.image) attachment = result.image;
+  } catch {
+    feedback('暂时无法选择图片。');
+  } finally {
+    pickingImage = false;
+    render();
+  }
+});
+$('attachment-remove').addEventListener('click', () => {
+  if (!attachment || sending || pickingImage) return;
+  window.paper.act('image-remove', { id: attachment.id });
+  attachment = null;
+  render();
+});
 $('draft').addEventListener('input', () => render());
 $('draft').addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.isComposing && (event.ctrlKey || event.metaKey) && !$('send').disabled) {
@@ -178,13 +290,59 @@ $('compose').addEventListener('submit', async (event) => {
   if ($('send').disabled) return;
   sending = true;
   const text = $('draft').value.trim();
-  if (pendingDraft?.text !== text) pendingDraft = { text, clientId: crypto.randomUUID() };
+  const imageId = attachment?.id;
+  if (pendingDraft?.text !== text || pendingDraft?.imageId !== imageId) {
+    pendingDraft = { text, imageId, clientId: crypto.randomUUID() };
+  }
   render();
-  if (await act('send', pendingDraft)) {
+  if (await act(imageId ? 'send-image' : 'send', pendingDraft)) {
     if ($('draft').value.trim() === text) $('draft').value = '';
+    if (attachment?.id === imageId) attachment = null;
     pendingDraft = null;
   }
   sending = false;
+  render();
+});
+
+function showMoodForm(show) {
+  $('mood-form').hidden = !show;
+  $('mood-edit').setAttribute('aria-expanded', String(show));
+}
+
+function renderMoodField() {
+  const custom = $('mood-kind').value === 'custom';
+  $('custom-mood').hidden = !custom;
+  $('mood-text').disabled = !custom;
+  $('mood-text').required = custom;
+}
+
+$('mood-edit').addEventListener('click', () => {
+  const show = $('mood-form').hidden;
+  if (show) {
+    $('request-form').hidden = true;
+    const select = $('mood-kind');
+    if (!select.options.length) {
+      for (const [kind, label] of Object.entries(data.moods)) select.add(new Option(label, kind));
+      select.add(new Option('自定义', 'custom'));
+    }
+    select.value = data.me.mood?.kind ?? 'happy';
+    $('mood-text').value = data.me.mood?.text ?? '';
+    renderMoodField();
+    showMoodForm(true);
+    select.focus();
+  } else {
+    showMoodForm(false);
+  }
+});
+$('mood-kind').addEventListener('change', renderMoodField);
+$('mood-cancel').addEventListener('click', () => showMoodForm(false));
+$('mood-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (moodBusy || $('mood-save').disabled) return;
+  moodBusy = true;
+  render();
+  if (await act('set-mood', { kind: $('mood-kind').value, text: $('mood-text').value })) showMoodForm(false);
+  moodBusy = false;
   render();
 });
 
@@ -203,6 +361,7 @@ buttons('[data-answer]').forEach((button) => button.addEventListener('click', ()
   if (data.incoming) changeFocus('answer', { id: data.incoming.id, decision: button.dataset.answer });
 }));
 $('ask').addEventListener('click', () => {
+  showMoodForm(false);
   $('request-form').hidden = false;
   $('reason').focus();
 });

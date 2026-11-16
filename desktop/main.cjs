@@ -1,6 +1,10 @@
-const { app, BrowserWindow, Menu, Tray, clipboard, ipcMain, nativeImage, powerMonitor, safeStorage, screen, shell } = require('electron');
+const { app, BrowserWindow, Menu, Tray, clipboard, dialog, ipcMain, nativeImage, powerMonitor, safeStorage, screen, shell } = require('electron');
+const { randomUUID } = require('node:crypto');
 const { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
+const { open } = require('node:fs/promises');
 const path = require('node:path');
+const { imageLimit, imageType, imageTypeMessage } = require('../shared/media.cjs');
+const { moods } = require('../shared/moods.cjs');
 const { invitation, pair, NoteLink, readdressInvitation } = require('./link.cjs');
 const { createTailscale, servePorts } = require('./tailscale.cjs');
 
@@ -9,6 +13,7 @@ if (process.platform === 'win32') app.setAppUserModelId('local.zhitiao.desktop')
 
 const ui = (file) => path.join(__dirname, 'ui', file);
 const emptyState = { me: null, partner: null, notes: [], incoming: null, outgoing: null };
+const petSize = { width: 104, height: 110 };
 const windowsServer = process.platform === 'win32';
 const tailscale = windowsServer ? createTailscale() : null;
 const tailscalePages = new Map([
@@ -20,8 +25,11 @@ let config, prefs, settingsPath, link, pet, chat, bubble, tray;
 let state = emptyState;
 let connection = null;
 let alert = null;
-let alertTimer;
+let petAnchor, visiblePetAnchor, petDisplay;
+let petNotice = null;
+let petNoticeTimer, hiddenNoteCount = 0, noticeId = 0;
 let drag;
+let selectedImage;
 let pairing = false;
 let quitting = false;
 let mayQuit = false;
@@ -64,7 +72,7 @@ function saveConfig(next) {
 function viewState() {
   return { ...state, connection, hidden: prefs.hidden, configured: Boolean(config?.ready),
     canInvite: Boolean(config?.ready && config.role === 1 && !state.partner), role: config?.role,
-    tailscaleAvailable: windowsServer, servePorts: prefs.serve, updates: updates?.state() };
+    moods, tailscaleAvailable: windowsServer, servePorts: prefs.serve, updates: updates?.state() };
 }
 
 function broadcast() {
@@ -102,15 +110,60 @@ function petPosition(saved) {
   const valid = saved && Number.isInteger(saved.x) && Number.isInteger(saved.y);
   const { x, y, width, height } = workArea(valid ? saved : null);
   return [
-    clamp(valid ? saved.x : x + width - 132, x, x + width - 104),
-    clamp(valid ? saved.y : y + height - 140, y, y + height - 110)
+    clamp(valid ? saved.x : x + width - 132, x, x + width - petSize.width),
+    clamp(valid ? saved.y : y + height - 140, y, y + height - petSize.height)
   ];
+}
+
+function layoutPet() {
+  visiblePetAnchor = petAnchor;
+  let bounds = { ...petAnchor, ...petSize };
+  petDisplay = { x: 0, y: 0, notice: petNotice };
+  if (petNotice) {
+    const area = workArea(petAnchor);
+    const width = Math.min(284, area.width - 12);
+    const height = petNotice.kind === 'notes' ? 124 : 93;
+    const center = petAnchor.x + petSize.width / 2;
+    const left = clamp(Math.round(center - width / 2), area.x + 6, area.x + area.width - width - 6);
+    const y = Math.max(petAnchor.y, area.y + height + 16);
+    const top = y - height - 12;
+    visiblePetAnchor = { x: petAnchor.x, y };
+    bounds.x = Math.min(petAnchor.x, left - 5);
+    bounds.y = top - 4;
+    bounds.width = Math.max(petAnchor.x + petSize.width, left + width + 5) - bounds.x;
+    bounds.height = y + petSize.height - bounds.y;
+    petDisplay = {
+      x: petAnchor.x - bounds.x, y: y - bounds.y, notice: petNotice,
+      speech: { x: left - bounds.x, bottom: petSize.height + 12, width, tailX: center - left }
+    };
+  }
+  const current = pet.getBounds();
+  if (Object.keys(bounds).some((key) => bounds[key] !== current[key])) pet.setBounds(bounds);
+  pet.webContents.send('paper:pet-display', petDisplay);
+  if (bubble?.isVisible()) positionBubble();
+}
+
+function closePetNotice() {
+  if (!petNotice) return;
+  clearTimeout(petNoticeTimer);
+  petNotice = null;
+  layoutPet();
+}
+
+function showPetNotice(kind, title, text) {
+  if (prefs.hidden) return;
+  clearTimeout(petNoticeTimer);
+  petNotice = { id: ++noticeId, kind, title, text };
+  layoutPet();
+  petNoticeTimer = setTimeout(closePetNotice, kind === 'notes' ? 7500 : 4800);
 }
 
 function createWindows() {
   const [x, y] = petPosition(prefs.position);
+  petAnchor = visiblePetAnchor = { x, y };
+  petDisplay = { x: 0, y: 0, notice: null };
   pet = openWindow('pet', {
-    x, y, width: 104, height: 110,
+    x, y, ...petSize, acceptFirstMouse: true,
     frame: false, transparent: true, hasShadow: false, resizable: false,
     alwaysOnTop: true, skipTaskbar: true, minimizable: false
   });
@@ -120,7 +173,6 @@ function createWindows() {
     event.preventDefault();
     togglePet(false);
   });
-  pet.on('move', () => { if (bubble?.isVisible()) positionBubble(); });
 
   chat = openWindow('chat', {
     title: '纸条桌宠', width: 430, height: 670, minWidth: 368, minHeight: 540, backgroundColor: '#f8f3ea'
@@ -142,12 +194,16 @@ function createWindows() {
 }
 
 function openChat() {
+  hiddenNoteCount = 0;
+  tray?.setToolTip('纸条桌宠');
+  closePetNotice();
   chat.show();
   chat.focus();
 }
 
 function positionBubble() {
-  const { x, y, width, height } = pet.getBounds();
+  const { x, y } = visiblePetAnchor;
+  const { width, height } = petSize;
   const area = workArea({ x, y });
   const [w, h] = bubble.getSize();
   const nearX = prefs.hidden ? area.x + area.width - w - 16 : x + width - w;
@@ -159,18 +215,15 @@ function positionBubble() {
 }
 
 function closeAlert() {
-  clearTimeout(alertTimer);
   alert = null;
   if (bubble && !bubble.isDestroyed()) bubble.hide();
 }
 
 function showAlert(value) {
-  clearTimeout(alertTimer);
   alert = value;
   positionBubble();
   bubble.webContents.send('paper:alert', alert);
   bubble.showInactive();
-  if (value.kind === 'notes') alertTimer = setTimeout(closeAlert, 7500);
 }
 
 function petMenu() {
@@ -184,8 +237,15 @@ function petMenu() {
 
 function togglePet(visible) {
   prefs.hidden = !visible;
-  if (visible) pet.showInactive();
-  else pet.hide();
+  if (visible) {
+    pet.showInactive();
+    if (hiddenNoteCount) showPetNotice('notes', '收到了 ' + hiddenNoteCount + ' 张纸条', '');
+    hiddenNoteCount = 0;
+    tray?.setToolTip('纸条桌宠');
+  } else {
+    pet.hide();
+    closePetNotice();
+  }
   savePrefs();
   tray?.setContextMenu(petMenu());
   broadcast();
@@ -208,18 +268,24 @@ function beginLink() {
       if (state.incoming && (reconnected || before !== state.incoming.id)) {
         showAlert({ kind: 'request', id: state.incoming.id, title: (state.partner?.name ?? '对方') + ' 想请你出关',
           text: state.incoming.text });
-      } else if (!state.incoming && alert?.kind === 'request') {
+      } else if (!state.incoming && alert) {
         closeAlert();
       }
     },
     onNotice(notes) {
-      if (alert?.kind === 'request') return;
+      if (prefs.hidden) {
+        hiddenNoteCount += notes.length;
+        tray?.setToolTip('纸条桌宠 · ' + hiddenNoteCount + ' 张新纸条');
+        return;
+      }
       const fromFocus = notes.filter((note) => note.focusId).length;
       const who = state.partner?.name ?? '对方';
+      const single = notes.length === 1 && !fromFocus ? notes[0] : null;
       const title = fromFocus === notes.length ? '闭关期间收到了 ' + fromFocus + ' 张纸条'
-        : notes.length === 1 ? who + ' 给你递了张纸条' : who + ' 给你递了 ' + notes.length + ' 张纸条';
-      const text = notes.length === 1 && !fromFocus ? notes[0].text : '';
-      showAlert({ kind: 'notes', title, text });
+        : single ? who + (single.hasImage ? ' 给你递了张图片' : ' 给你递了张纸条')
+        : who + ' 给你递了 ' + notes.length + ' 张纸条';
+      const text = single?.hasImage && single.text === '[图片]' ? '' : single?.text;
+      showPetNotice('notes', title, text ?? '');
     }
   });
   link.start();
@@ -265,16 +331,47 @@ async function handleServe(action, payload) {
   }
 }
 
+async function chooseImage() {
+  const result = await dialog.showOpenDialog(chat, {
+    title: '给纸条选一张图片', properties: ['openFile'],
+    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }]
+  });
+  if (result.canceled || !result.filePaths[0]) return { ok: true };
+  const file = result.filePaths[0];
+  const handle = await open(file, 'r');
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > imageLimit) throw new Error(imageTypeMessage);
+    const chunks = [];
+    for await (const chunk of handle.createReadStream({ end: imageLimit, autoClose: false })) chunks.push(chunk);
+    const bytes = Buffer.concat(chunks);
+    if (!imageType(bytes)) throw new Error(imageTypeMessage);
+    const id = randomUUID();
+    selectedImage = { id, bytes };
+    return { ok: true, image: { id, name: path.basename(file) } };
+  } finally {
+    await handle.close();
+  }
+}
+
 function registerIpc() {
   ipcMain.handle('paper:current', () => viewState());
   ipcMain.handle('paper:current-alert', () => alert);
+  ipcMain.handle('paper:current-pet-display', () => petDisplay);
   ipcMain.handle('paper:act', async (event, action, payload = {}) => {
     if (![pet.webContents, chat.webContents, bubble.webContents].includes(event.sender)) return { ok: false };
     try {
       switch (action) {
         case 'open':
           openChat();
-          if (alert?.kind === 'notes') closeAlert();
+          break;
+        case 'mood-peek':
+          if (event.sender !== pet.webContents) break;
+          if (state.partner) {
+            showPetNotice('mood', state.partner.name + ' 的心情', state.partner.mood?.label ?? '对方还没设置心情。');
+          } else {
+            showPetNotice('mood', '对方的心情', connection ?? '配对后就能看到对方的心情。');
+          }
           break;
         case 'dismiss':
           closeAlert();
@@ -286,22 +383,25 @@ function registerIpc() {
           togglePet(false);
           break;
         case 'drag-start':
-          drag = { mouse: screen.getCursorScreenPoint(), bounds: pet.getBounds() };
+          drag = { mouse: screen.getCursorScreenPoint(), origin: visiblePetAnchor, moved: false };
           break;
         case 'drag-move':
           if (drag) {
             const mouse = screen.getCursorScreenPoint();
-            const next = { x: drag.bounds.x + mouse.x - drag.mouse.x, y: drag.bounds.y + mouse.y - drag.mouse.y };
-            pet.setPosition(...petPosition(next));
+            const next = { x: drag.origin.x + mouse.x - drag.mouse.x, y: drag.origin.y + mouse.y - drag.mouse.y };
+            const [x, y] = petPosition(next);
+            petAnchor = { x, y };
+            drag.moved = true;
+            if (petNotice) closePetNotice();
+            else layoutPet();
           }
           break;
         case 'drag-end':
-          if (drag) {
-            const { x, y } = pet.getBounds();
-            prefs.position = { x, y };
-            drag = null;
+          if (drag?.moved) {
+            prefs.position = petAnchor;
             savePrefs();
           }
+          drag = null;
           break;
         case 'create':
         case 'join':
@@ -322,10 +422,33 @@ function registerIpc() {
           clipboard.writeText(invitation(config));
           break;
         case 'send':
+        case 'send-image':
         case 'request':
           if (!link || connection || !state.partner?.online) throw new Error('对方离线，等 TA 上线后再发吧。');
           if (action === 'send') await link.send(payload.text, payload.clientId);
-          else await link.ask(payload.text, payload.focusId);
+          else if (action === 'request') await link.ask(payload.text, payload.focusId);
+          else {
+            const image = selectedImage;
+            if (event.sender !== chat.webContents || !image || payload.imageId !== image.id) throw new Error('请重新选择图片。');
+            await link.sendImage(image.bytes, payload.text, payload.clientId);
+            if (selectedImage === image) selectedImage = null;
+          }
+          break;
+        case 'image-pick':
+          if (event.sender !== chat.webContents) throw new Error('请在纸条窗口里选择图片。');
+          return await chooseImage();
+        case 'image-remove':
+          if (event.sender === chat.webContents && selectedImage?.id === payload.id) selectedImage = null;
+          break;
+        case 'note-image': {
+          if (event.sender !== chat.webContents || !link || connection) throw new Error('暂时连不上纸条服务。');
+          const note = state.notes.find(({ id, hasImage }) => id === payload.id && hasImage);
+          if (!note) throw new Error('找不到这张图片。');
+          return { ok: true, src: await link.readImage(note) };
+        }
+        case 'set-mood':
+          if (event.sender !== chat.webContents || !link || connection) throw new Error('暂时连不上纸条服务。');
+          await link.setMood(payload.kind, payload.text);
           break;
         case 'start':
         case 'finish':
@@ -373,7 +496,7 @@ function launch({ updater, releasePage, ready, failed } = {}) {
   updateReleasePage = releasePage;
   readyCallback = ready;
   app.on('second-instance', () => { if (chat) openChat(); });
-  app.on('activate', () => { if (chat) openChat(); });
+  app.on('activate', (_, hasVisibleWindows) => { if (chat && !hasVisibleWindows) openChat(); });
   app.on('before-quit', (event) => {
     quitting = true;
     updates?.stop();
@@ -395,6 +518,7 @@ function launch({ updater, releasePage, ready, failed } = {}) {
       link?.stop(true);
       if (config?.ready) connection = '正在等电脑重新联网…';
       closeAlert();
+      closePetNotice();
       broadcast();
     });
     powerMonitor.on('resume', () => {

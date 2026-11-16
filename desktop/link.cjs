@@ -1,6 +1,8 @@
 const { randomBytes, randomUUID } = require('node:crypto');
 const { setTimeout: delay } = require('node:timers/promises');
-const { seal, unseal } = require('../shared/sealed.cjs');
+const { seal, unseal, openBytes } = require('../shared/sealed.cjs');
+const { imageType, imageTypeMessage } = require('../shared/media.cjs');
+const { parseMood } = require('../shared/moods.cjs');
 
 const secret = () => randomBytes(32).toString('base64url');
 const isSecret = (value) => typeof value === 'string' && /^[\w-]{43}$/.test(value);
@@ -139,6 +141,21 @@ class NoteLink {
     }
   }
 
+  memberWithMood(member) {
+    if (!member) return null;
+    const { mood: encrypted, ...info } = member;
+    let mood = null;
+    if (encrypted) {
+      try {
+        const { kind, text } = JSON.parse(unseal(encrypted, this.config.key, 'mood:' + member.id));
+        mood = parseMood(kind, text);
+      } catch {
+        // Keep chat usable if a saved mood cannot be read.
+      }
+    }
+    return { ...info, mood };
+  }
+
   async update(data, signal) {
     const notes = data.notes.map(({ content, ...note }) => ({
       ...note, ...this.decode(content, 'note:' + note.sender + ':' + note.clientId)
@@ -150,7 +167,7 @@ class NoteLink {
     };
     const waiting = notes.filter((note) => note.sender !== data.me.id && note.deliveredAt === null);
     const newlyArrived = waiting.filter((note) => !this.announced.has(note.id));
-    this.onState({ ...state, notes, incoming: request });
+    this.onState({ ...state, me: this.memberWithMood(data.me), partner: this.memberWithMood(data.partner), notes, incoming: request });
     if (newlyArrived.length) {
       for (const note of newlyArrived) this.announced.add(note.id);
       this.onNotice(newlyArrived);
@@ -174,6 +191,40 @@ class NoteLink {
       action: 'send', clientId: id,
       content: seal(text.trim(), this.config.key, 'note:' + this.config.role + ':' + id)
     });
+  }
+
+  async sendImage(bytes, caption, clientId) {
+    if (!imageType(bytes)) throw new Error(imageTypeMessage);
+    if (typeof caption !== 'string' || [...caption.trim()].length > 600) throw new Error('图片附言最多 600 个字。');
+    const id = typeof clientId === 'string' ? clientId : randomUUID();
+    const prefix = this.config.role + ':' + id;
+    try {
+      await this.call('/api/images', {
+        body: {
+          clientId: id,
+          content: seal(caption.trim() || '[图片]', this.config.key, 'note:' + prefix),
+          image: seal(bytes, this.config.key, 'image:' + prefix)
+        },
+        timeout: 120_000
+      });
+    } catch (error) {
+      if (error.status === 404) throw new Error('纸条服务需要更新后才能发送图片。');
+      throw error;
+    }
+  }
+
+  async readImage(note) {
+    const { content } = await this.call('/api/images/' + note.id, { timeout: 120_000 });
+    const bytes = openBytes(content, this.config.key, 'image:' + note.sender + ':' + note.clientId);
+    const mime = imageType(bytes);
+    if (!mime) throw new Error('无法显示这张图片。');
+    return 'data:' + mime + ';base64,' + bytes.toString('base64');
+  }
+
+  setMood(kind, text) {
+    const mood = parseMood(kind, text);
+    const clean = JSON.stringify({ kind: mood.kind, text: mood.text });
+    return this.command({ action: 'set-mood', content: seal(clean, this.config.key, 'mood:' + this.config.role) });
   }
 
   async ask(text, focusId) {

@@ -1,5 +1,6 @@
 const { DatabaseSync } = require('node:sqlite');
 const { createHash, randomUUID, timingSafeEqual } = require('node:crypto');
+const { imageLimit } = require('../shared/media.cjs');
 
 const HOUR = 60 * 60 * 1000;
 const KEEP = 7 * 24 * HOUR;
@@ -69,6 +70,14 @@ function schema(db) {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS only_one_pending
       ON requests(recipient) WHERE status = 'pending';
+    CREATE TABLE IF NOT EXISTS note_images (
+      note_id INTEGER PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+      content TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS moods (
+      member INTEGER PRIMARY KEY REFERENCES people(id) ON DELETE CASCADE,
+      content TEXT NOT NULL
+    );
   `);
 }
 
@@ -151,13 +160,19 @@ function openStore(path, { now = Date.now, setupKey = '' } = {}) {
   }
 
   function state(id, revision) {
-    const me = get('SELECT id, name, focus_id AS focusId, focus_until AS focusUntil FROM people WHERE id = ?', id);
-    const other = 3 - id;
-    const partner = get('SELECT id, name, focus_id AS focusId, focus_until AS focusUntil FROM people WHERE id = ?', other) ?? null;
-    const notes = all('SELECT id, client_id AS clientId, sender, content, created_at AS createdAt, focus_id AS focusId, available_at AS availableAt, delivered_at AS deliveredAt FROM notes WHERE sender = ? OR (recipient = ? AND available_at IS NOT NULL) ORDER BY id', id, id);
+    const personSql = 'SELECT p.id, p.name, p.focus_id AS focusId, p.focus_until AS focusUntil, m.content AS mood FROM people p LEFT JOIN moods m ON m.member = p.id WHERE p.id = ?';
+    const me = get(personSql, id);
+    const partner = get(personSql, 3 - id) ?? null;
+    const notes = all('SELECT id, client_id AS clientId, sender, content, created_at AS createdAt, focus_id AS focusId, available_at AS availableAt, delivered_at AS deliveredAt, EXISTS(SELECT 1 FROM note_images WHERE note_id = notes.id) AS hasImage FROM notes WHERE sender = ? OR (recipient = ? AND available_at IS NOT NULL) ORDER BY id', id, id);
     const incoming = get("SELECT id, content, created_at AS createdAt FROM requests WHERE recipient = ? AND status = 'pending'", id) ?? null;
     const outgoing = get('SELECT id, status FROM requests WHERE sender = ? ORDER BY rowid DESC LIMIT 1', id) ?? null;
     return { revision, time: now(), me, partner, notes, incoming, outgoing };
+  }
+
+  function imageFor(id, noteId) {
+    const image = get('SELECT i.content FROM note_images i JOIN notes n ON n.id = i.note_id WHERE n.id = ? AND (n.sender = ? OR (n.recipient = ? AND n.available_at IS NOT NULL))', noteId, id, id);
+    need(image, 404, '找不到这张图片。');
+    return image;
   }
 
   function command(id, body) {
@@ -176,12 +191,21 @@ function openStore(path, { now = Date.now, setupKey = '' } = {}) {
           if (!me.focus_id) return false;
           finishFocus(me, time);
           return true;
-        case 'send': {
+        case 'send':
+        case 'send-image': {
           need(partner, 409, '配对后就能递纸条。');
           need(isId(body.clientId), 400, '纸条编号无效。');
           const content = checkSealed(body.content, 2400);
-          return run('INSERT INTO notes (client_id, sender, recipient, content, created_at, focus_id, available_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(sender, client_id) DO NOTHING',
-            body.clientId, id, partner.id, content, time, partner.focus_id, partner.focus_id ? null : time) > 0;
+          const image = body.action === 'send-image' ? checkSealed(body.image, imageLimit) : null;
+          const inserted = db.prepare('INSERT INTO notes (client_id, sender, recipient, content, created_at, focus_id, available_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(sender, client_id) DO NOTHING')
+            .run(body.clientId, id, partner.id, content, time, partner.focus_id, partner.focus_id ? null : time);
+          if (inserted.changes && image) run('INSERT INTO note_images (note_id, content) VALUES (?, ?)', inserted.lastInsertRowid, image);
+          return inserted.changes > 0;
+        }
+        case 'set-mood': {
+          const content = checkSealed(body.content, 300);
+          run('INSERT INTO moods (member, content) VALUES (?, ?) ON CONFLICT(member) DO UPDATE SET content = excluded.content', id, content);
+          return true;
         }
         case 'request': {
           need(partner?.focus_id, 409, '对方已经出关了。');
@@ -218,7 +242,7 @@ function openStore(path, { now = Date.now, setupKey = '' } = {}) {
     });
   }
 
-  return { create, join, authenticate, maintain, state, command, close: () => db.close() };
+  return { create, join, authenticate, maintain, state, imageFor, command, close: () => db.close() };
 }
 
 module.exports = { openStore, RequestError, HOUR, KEEP };

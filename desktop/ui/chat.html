@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>纸条桌宠</title>
   <link rel="stylesheet" href="style.css">
@@ -46,6 +46,7 @@
       <div>
         <span class="eyebrow">你</span>
         <strong id="my-status">—</strong>
+        <span id="my-mood" class="eyebrow" hidden></span>
       </div>
       <div>
         <span id="partner-name" class="eyebrow">对方</span>
@@ -57,7 +58,18 @@
       <button data-focus="manual">一直闭关</button>
       <button id="finish" class="primary" hidden>结束闭关</button>
       <button id="ask" class="text-button" hidden>申请解除</button>
+      <button id="mood-edit" type="button" class="text-button" aria-controls="mood-form" aria-expanded="false">设置心情</button>
     </div>
+    <form id="mood-form" class="aside" hidden>
+      <label>我的心情<select id="mood-kind"></select></label>
+      <label id="custom-mood" hidden>自定义心情
+        <input id="mood-text" type="text" maxlength="80" placeholder="最多 40 个字" disabled>
+      </label>
+      <div class="actions">
+        <button class="primary" type="submit" id="mood-save">保存心情</button>
+        <button id="mood-cancel" type="button">取消</button>
+      </div>
+    </form>
     <form id="request-form" class="aside" hidden>
       <label>附一句原因（可选）
         <input id="reason" type="text" maxlength="180" placeholder="想和 TA 说什么？">
@@ -82,8 +94,15 @@
     </div>
     <div id="notes" aria-label="纸条记录" tabindex="0"></div>
     <form id="compose" class="compose">
+      <div id="attachment" class="attachment" hidden>
+        <span id="attachment-name"></span>
+        <button id="attachment-remove" type="button" class="text-button">移除</button>
+      </div>
       <textarea aria-label="纸条内容" id="draft" maxlength="1200" rows="2" placeholder="写张纸条…" required></textarea>
-      <button class="primary" type="submit" id="send">递纸条</button>
+      <div class="compose-actions">
+        <button id="image-pick" type="button" class="text-button">加图片</button>
+        <button class="primary" type="submit" id="send">递纸条</button>
+      </div>
     </form>
     <p id="compose-status" class="meta"></p>
   </main>
