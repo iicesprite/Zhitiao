@@ -24,6 +24,7 @@ const tailscalePages = new Map([
 let config, prefs, settingsPath, link, pet, chat, bubble, tray;
 let state = emptyState;
 let connection = null;
+let credentialsExpired = false;
 let alert = null;
 let petAnchor, visiblePetAnchor, petDisplay;
 let petNotice = null;
@@ -72,7 +73,7 @@ function saveConfig(next) {
 function viewState() {
   return { ...state, connection, hidden: prefs.hidden, configured: Boolean(config?.ready),
     canInvite: Boolean(config?.ready && config.role === 1 && !state.partner), role: config?.role,
-    moods, tailscaleAvailable: windowsServer, servePorts: prefs.serve, updates: updates?.state() };
+    moods, credentialsExpired, tailscaleAvailable: windowsServer, servePorts: prefs.serve, updates: updates?.state() };
 }
 
 function broadcast() {
@@ -254,8 +255,9 @@ function togglePet(visible) {
 function beginLink() {
   if (!config?.ready) return;
   link = new NoteLink(config, {
-    onConnection(error) {
+    onConnection(error, status) {
       connection = error;
+      credentialsExpired = status === 401;
       closeAlert();
       broadcast();
     },
@@ -264,6 +266,7 @@ function beginLink() {
       const reconnected = Boolean(connection);
       state = next;
       connection = null;
+      credentialsExpired = false;
       broadcast();
       if (state.incoming && (reconnected || before !== state.incoming.id)) {
         showAlert({ kind: 'request', id: state.incoming.id, title: (state.partner?.name ?? '对方') + ' 想请你出关',
@@ -289,6 +292,21 @@ function beginLink() {
     }
   });
   link.start();
+}
+
+async function copyDeviceInvite() {
+  if (!link || connection || !state.devices) throw new Error('请先连接支持多设备的纸条服务。');
+  let address = new URL(config.url);
+  if (['localhost', '127.0.0.1', '[::1]'].includes(address.hostname)) {
+    if (!tailscale || Number(address.port || 80) !== prefs.serve.localPort) {
+      throw new Error('请在「异地连接」配置纸条服务对应端口的 Tailscale 私有 HTTPS。');
+    }
+    const result = await tailscale.update('status', prefs.serve, config);
+    if (!result.url) throw new Error('请先在「异地连接」启动 Tailscale Serve。');
+    if (!result.localReady) throw new Error('请确认 Tailscale Serve 指向当前配对使用的纸条服务。');
+    address = new URL(result.url);
+  }
+  clipboard.writeText(await link.inviteDevice(address.origin));
 }
 
 async function handleServe(action, payload) {
@@ -405,6 +423,8 @@ function registerIpc() {
           break;
         case 'create':
         case 'join':
+        case 'join-device':
+          if (event.sender !== chat.webContents) throw new Error('请在纸条窗口里配对。');
           if (config?.ready || pairing) throw new Error('配对已经在进行。');
           pairing = true;
           try {
@@ -420,6 +440,29 @@ function registerIpc() {
         case 'copy':
           if (!viewState().canInvite) throw new Error('目前没有待发送的邀请。');
           clipboard.writeText(invitation(config));
+          break;
+        case 'copy-device-invite':
+          if (event.sender !== chat.webContents) break;
+          await copyDeviceInvite();
+          break;
+        case 'remove-device': {
+          if (event.sender !== chat.webContents || !link || connection) throw new Error('暂时连不上纸条服务。');
+          const device = state.devices?.find(({ id }) => id === payload.id && id !== state.deviceId);
+          if (!device) throw new Error('找不到这台设备。');
+          const answer = await dialog.showMessageBox(chat, { type: 'question', message: '移除「' + device.name + '」？', detail: '这台设备下次使用时需要重新添加。', buttons: ['取消', '移除'], defaultId: 0, cancelId: 0 });
+          if (answer.response === 1) await link.command({ action: 'remove-device', deviceId: device.id });
+          break;
+        }
+        case 'reset-device':
+          if (event.sender !== chat.webContents || !credentialsExpired) break;
+          await link?.stop();
+          delete prefs.link;
+          savePrefs();
+          link = config = null;
+          state = emptyState;
+          connection = null;
+          credentialsExpired = false;
+          broadcast();
           break;
         case 'send':
         case 'send-image':

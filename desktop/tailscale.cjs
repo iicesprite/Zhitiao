@@ -186,7 +186,7 @@ function createTailscale({ find = installedTailscale, command = run, withAdmin =
       else if (!await verifyHttps(result.url)) result.message = 'Serve 已配置。HTTPS 检查暂未通过，可稍后点「检查状态」。';
       else result.message = '私有 HTTPS 已连通。';
     }
-    return { state: result.state, message: result.message, url: result.url,
+    return { state: result.state, message: result.message, url: result.url, localReady: Boolean(local),
       canInvite: Boolean(result.url && local?.canInvite), ports };
   }
 

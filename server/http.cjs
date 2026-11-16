@@ -35,7 +35,7 @@ async function readBody(request, max = 16 * 1024) {
   throw new RequestError(400, '请求内容无效。');
 }
 
-function createNoteServer({ dbPath, setupKey, now, waitMs = 5000, presenceMs = 12_000, presenceClock = Date.now }) {
+function createNoteServer({ dbPath, setupKey, now = Date.now, waitMs = 5000, presenceMs = 12_000, presenceClock = Date.now }) {
   if (dbPath !== ':memory:') mkdirSync(dirname(resolve(dbPath)), { recursive: true });
   const store = openStore(dbPath, { setupKey, now });
   const changes = new EventEmitter();
@@ -50,8 +50,8 @@ function createNoteServer({ dbPath, setupKey, now, waitMs = 5000, presenceMs = 1
   function maintain() {
     const changed = store.maintain();
     let disconnected = false;
-    for (const [id, deadline] of online) {
-      if (presenceClock() >= deadline) {
+    for (const [id, device] of online) {
+      if (presenceClock() >= device.deadline) {
         online.delete(id);
         disconnected = true;
       }
@@ -59,10 +59,16 @@ function createNoteServer({ dbPath, setupKey, now, waitMs = 5000, presenceMs = 1
     if (changed || disconnected) publish();
   }
 
-  function markOnline(id) {
-    const justConnected = !online.has(id);
-    online.set(id, presenceClock() + presenceMs);
-    if (justConnected) publish();
+  function markOnline({ id, member }) {
+    const current = online.get(id);
+    const since = current?.since ?? now();
+    online.set(id, { member, since, deadline: presenceClock() + presenceMs });
+    if (!current) publish();
+    return since;
+  }
+
+  function memberOnline(member) {
+    return [...online.values()].some((device) => device.member === member);
   }
 
   function authenticate(request) {
@@ -70,10 +76,12 @@ function createNoteServer({ dbPath, setupKey, now, waitMs = 5000, presenceMs = 1
     return store.authenticate(header?.startsWith('Bearer ') ? header.slice(7) : null);
   }
 
-  function sendState(response, id, after) {
+  function sendState(request, response, onlineSince, after) {
     const ready = () => {
-      const state = store.state(id, revision);
-      if (state.partner) state.partner.online = online.has(state.partner.id);
+      const { member, id } = authenticate(request);
+      const state = store.state(member, revision, id, onlineSince);
+      if (state.partner) state.partner.online = memberOnline(state.partner.id);
+      for (const device of state.devices) device.online = online.has(device.id);
       json(response, 200, state);
     };
     if (after !== revision) return ready();
@@ -88,9 +96,10 @@ function createNoteServer({ dbPath, setupKey, now, waitMs = 5000, presenceMs = 1
       try {
         ready();
       } catch (error) {
-        console.error(error);
-        if (!response.destroyed) json(response, 500, { error: '服务暂时无法处理请求。' });
+        if (!(error instanceof RequestError)) console.error(error);
+        if (!response.destroyed) json(response, error.status ?? 500, { error: error instanceof RequestError ? error.message : '服务暂时无法处理请求。' });
       }
+
     }
     const timer = setTimeout(complete, waitMs);
     changes.once('state', complete);
@@ -102,6 +111,12 @@ function createNoteServer({ dbPath, setupKey, now, waitMs = 5000, presenceMs = 1
       const url = new URL(request.url, 'http://localhost');
       if (request.method === 'GET' && url.pathname === '/health') return json(response, 200, { ok: true });
 
+      if (request.method === 'POST' && url.pathname === '/api/devices/join') {
+        const result = store.joinDevice(await readBody(request));
+        publish();
+        return json(response, 201, result);
+      }
+
       if (request.method === 'POST' && ['/api/create', '/api/join'].includes(url.pathname)) {
         const body = await readBody(request);
         const result = url.pathname === '/api/create' ? store.create(body) : store.join(body);
@@ -110,34 +125,38 @@ function createNoteServer({ dbPath, setupKey, now, waitMs = 5000, presenceMs = 1
       }
 
       if (request.method === 'GET' && url.pathname === '/api/state') {
-        const id = authenticate(request);
+        const device = authenticate(request);
         maintain();
-        markOnline(id);
-        return sendState(response, id, url.searchParams.get('after'));
+        const since = markOnline(device);
+        return sendState(request, response, since, url.searchParams.get('after'));
       }
 
       if (request.method === 'POST' && url.pathname === '/api/offline') {
-        if (online.delete(authenticate(request))) publish();
+        if (online.delete(authenticate(request).id)) publish();
         return json(response, 200, { ok: true });
       }
 
       const imageGet = /^\/api\/images\/([1-9]\d{0,14})$/.exec(url.pathname);
       if (request.method === 'GET' && imageGet) {
-        const id = authenticate(request);
+        const { member } = authenticate(request);
         maintain();
-        return json(response, 200, store.imageFor(id, Number(imageGet[1])));
+        return json(response, 200, store.imageFor(member, Number(imageGet[1])));
       }
       if (request.method === 'POST' && ['/api/command', '/api/images'].includes(url.pathname)) {
-        const id = authenticate(request);
+        authenticate(request);
         const withImage = url.pathname === '/api/images';
         const body = await readBody(request, withImage ? imageRequestLimit : undefined);
+        const { member, id } = authenticate(request);
         if (withImage) body.action = 'send-image';
         else if (body.action === 'send-image') throw new RequestError(400, '请使用图片发送入口。');
         maintain();
-        if (['send', 'send-image', 'request'].includes(body.action) && !online.has(3 - id)) {
+        if (['send', 'send-image', 'request'].includes(body.action) && !memberOnline(3 - member)) {
           throw new RequestError(409, '对方离线，等 TA 上线后再发吧。');
         }
-        if (store.command(id, body)) publish();
+        if (store.command(member, body, id)) {
+          if (body.action === 'remove-device') online.delete(body.deviceId);
+          publish();
+        }
         return json(response, 200, { ok: true });
       }
 

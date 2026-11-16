@@ -15,6 +15,9 @@ let partnerFocus = null;
 let feedbackTimer;
 let showServe = false;
 let showUpdates = false;
+let showDevices = false;
+let copyingDeviceInvite = false;
+let deviceSignature = null;
 let updateBusy = false;
 let initializedPorts = false;
 let serveLoading = false;
@@ -51,11 +54,17 @@ async function act(name, fields) {
 function showTab(next) {
   tab = next;
   const create = tab === 'create';
+  const adding = tab === 'join-device';
   $('join-fields').hidden = create;
   $('create-fields').hidden = !create;
   for (const input of $('create-fields').querySelectorAll('input')) input.disabled = !create;
-  $('pair-form').elements.invite.disabled = create;
-  $('pair-submit').textContent = create ? '生成邀请码' : '完成配对';
+  const fields = $('pair-form').elements;
+  fields.invite.disabled = create;
+  $('pair-name-label').textContent = adding ? '设备名称' : '昵称';
+  fields.name.placeholder = adding ? '例如 工位电脑' : '对方怎么称呼你';
+  $('pair-code-label').textContent = adding ? '设备码' : '邀请码';
+  fields.invite.placeholder = adding ? '粘贴自己另一台电脑生成的整段设备码' : '粘贴对方给你的整段邀请码';
+  $('pair-submit').textContent = create ? '生成邀请码' : adding ? '连接这台设备' : '完成配对';
   buttons('[data-tab]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.tab === tab)));
 }
 
@@ -176,11 +185,15 @@ function render(info = data) {
   $('updates').hidden = !info.updates;
   $('updates').textContent = showUpdates ? '返回纸条' : info.updates?.readyVersion ? '新版已就绪' : '软件更新';
   $('updates-panel').hidden = !showUpdates;
+  $('devices').hidden = !info.configured;
+  $('devices').textContent = showDevices ? '返回纸条' : '我的设备';
+  $('devices-panel').hidden = !showDevices;
+  if (showDevices) renderDevices(info);
   $('update-version').textContent = info.updates ? '当前版本 ' + info.updates.version : '';
   $('update-status').textContent = info.updates?.message ?? '';
   $('update-restart').hidden = !info.updates?.readyVersion;
   $('update-check').disabled = updateBusy;
-  const panelOpen = showServe || showUpdates;
+  const panelOpen = showServe || showUpdates || showDevices;
   $('setup').hidden = panelOpen || info.configured;
   $('waiting').hidden = panelOpen || !info.configured || info.partner !== null;
   $('room').hidden = panelOpen || !info.partner;
@@ -239,6 +252,35 @@ function render(info = data) {
     ? info.partner.focusId ? '这张纸条会在对方出关后送达。' : ''
     : '对方离线，等 TA 上线后再发。');
   renderNotes(info);
+}
+
+function renderDevices(info) {
+  const devices = info.credentialsExpired ? [] : info.devices ?? [];
+  $('copy-device-invite').hidden = info.credentialsExpired;
+  $('copy-device-invite').disabled = Boolean(info.connection) || !info.devices || copyingDeviceInvite;
+  $('reset-device').hidden = !info.credentialsExpired;
+  $('device-help').textContent = info.credentialsExpired ? '本机的设备登录已失效，请从另一台已连接的设备获取新的设备码。'
+    : info.connection || (!info.devices ? '请先更新纸条服务。' : '在另一台电脑选择「添加这台设备」，粘贴设备码。设备码有效期 10 分钟，请只发给自己。');
+  const signature = JSON.stringify([info.deviceId, Boolean(info.connection), devices]);
+  if (signature === deviceSignature) return;
+  deviceSignature = signature;
+  const rows = devices.map((device) => {
+    const row = document.createElement('li');
+    const name = document.createElement('span');
+    const self = device.id === info.deviceId;
+    name.textContent = device.name + (self ? ' · 本机' : '') + (info.connection ? '' : device.online ? ' · 在线' : ' · 离线');
+    row.append(name);
+    if (!self) {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = '移除';
+      remove.disabled = Boolean(info.connection);
+      remove.addEventListener('click', () => act('remove-device', { id: device.id }));
+      row.append(remove);
+    }
+    return row;
+  });
+  $('device-list').replaceChildren(...rows);
 }
 
 buttons('[data-tab]').forEach((button) => button.addEventListener('click', () => showTab(button.dataset.tab)));
@@ -431,6 +473,7 @@ async function serveAction(action) {
 
 $('network').addEventListener('click', () => {
   showUpdates = false;
+  showDevices = false;
   showServe = !showServe;
   if (showServe && !initializedPorts) {
     const form = $('serve-form');
@@ -461,8 +504,30 @@ for (const action of ['serve-install', 'serve-dns', 'serve-share']) {
 
 $('updates').addEventListener('click', () => {
   showServe = false;
+  showDevices = false;
   showUpdates = !showUpdates;
   render();
+});
+$('devices').addEventListener('click', () => {
+  showServe = false;
+  showUpdates = false;
+  showDevices = !showDevices;
+  render();
+});
+$('copy-device-invite').addEventListener('click', async () => {
+  if (copyingDeviceInvite) return;
+  copyingDeviceInvite = true;
+  render();
+  if (await act('copy-device-invite')) feedback('设备码已复制。');
+  copyingDeviceInvite = false;
+  render();
+});
+$('reset-device').addEventListener('click', async () => {
+  if (await act('reset-device')) {
+    showDevices = false;
+    showTab('join-device');
+    render();
+  }
 });
 $('update-check').addEventListener('click', async () => {
   updateBusy = true;

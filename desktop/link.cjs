@@ -21,14 +21,15 @@ function invitation({ url, code, key }) {
   return 'ZT1.' + Buffer.from(JSON.stringify({ url, code, key })).toString('base64url');
 }
 
-function readInvitation(value) {
+function readInvitation(value, device = false) {
   try {
-    if (!/^ZT1\.[\w-]{1,1200}$/.test(value)) throw new Error();
+    const format = device ? /^ZT2\.[\w-]{1,1200}$/ : /^ZT1\.[\w-]{1,1200}$/;
+    if (!format.test(value)) throw new Error();
     const { url, code, key } = JSON.parse(Buffer.from(value.slice(4), 'base64url').toString('utf8'));
     if (!isSecret(code) || !isSecret(key)) throw new Error();
     return { url: serverUrl(url), code, key };
   } catch {
-    throw new Error('邀请码不完整，请重新复制对方给你的整段邀请码。');
+    throw new Error(device ? '请粘贴另一台设备生成的完整设备码。' : '邀请码不完整，请重新复制对方给你的整段邀请码。');
   }
 }
 
@@ -71,6 +72,14 @@ async function pair(kind, fields, previous, savePending) {
   const name = fields.name?.trim();
   if (!name || [...name].length > 16) throw new Error('请输入 1 到 16 个字的昵称。');
   let config;
+  if (kind === 'join-device') {
+    const invite = readInvitation(fields.invite?.trim(), true);
+    const token = previous?.devicePending && previous.url === invite.url && previous.code === invite.code ? previous.token : secret();
+    savePending({ ...invite, token, devicePending: true });
+    const { role } = await api(invite.url, '/api/devices/join', { body: { name, token, code: invite.code } });
+    if (role !== 1 && role !== 2) throw new Error('服务未返回有效的设备配对结果。');
+    return { url: invite.url, key: invite.key, token, role, ready: true };
+  }
   if (kind === 'create') {
     let url;
     try { url = serverUrl(fields.url?.trim()); } catch { throw new Error('请输入纸条服务的 HTTPS 根地址。'); }
@@ -123,7 +132,7 @@ class NoteLink {
         await this.update(data, signal);
       } catch (error) {
         if (signal.aborted) return;
-        this.onConnection(error.message);
+        this.onConnection(error.message, error.status);
         if (error.status === 401) {
           this.controller = null;
           return;
@@ -165,7 +174,8 @@ class NoteLink {
       id: incoming.id,
       text: incoming.content ? this.decode(incoming.content, 'request:' + data.me.focusId).text : ''
     };
-    const waiting = notes.filter((note) => note.sender !== data.me.id && note.deliveredAt === null);
+    const needsNotice = (note) => !(note.notified ?? (note.deliveredAt !== null));
+    const waiting = notes.filter((note) => note.sender !== data.me.id && needsNotice(note));
     const newlyArrived = waiting.filter((note) => !this.announced.has(note.id));
     this.onState({ ...state, me: this.memberWithMood(data.me), partner: this.memberWithMood(data.partner), notes, incoming: request });
     if (newlyArrived.length) {
@@ -173,7 +183,7 @@ class NoteLink {
       this.onNotice(newlyArrived);
     }
     for (const note of notes) {
-      if (note.deliveredAt !== null) this.announced.delete(note.id);
+      if (!needsNotice(note)) this.announced.delete(note.id);
     }
     const readable = waiting.filter((note) => note.readable);
     for (let index = 0; index < readable.length; index += 200) {
@@ -239,6 +249,13 @@ class NoteLink {
 
   command(body) {
     return this.call('/api/command', { body });
+  }
+
+  async inviteDevice(address = this.config.url) {
+    const url = serverUrl(address);
+    const code = secret();
+    await this.command({ action: 'invite-device', code });
+    return 'ZT2.' + Buffer.from(JSON.stringify({ url, code, key: this.config.key })).toString('base64url');
   }
 }
 

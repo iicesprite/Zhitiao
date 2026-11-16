@@ -21,11 +21,12 @@
     <div class="tabs" role="group" aria-label="配对方式">
       <button type="button" data-tab="join" aria-pressed="true">我有邀请码</button>
       <button type="button" data-tab="create" aria-pressed="false">创建配对</button>
+      <button type="button" data-tab="join-device" aria-pressed="false">添加这台设备</button>
     </div>
     <form id="pair-form">
-      <label>昵称<input name="name" maxlength="32" placeholder="对方怎么称呼你" required></label>
+      <label><span id="pair-name-label">昵称</span><input name="name" maxlength="32" placeholder="对方怎么称呼你" required></label>
       <div id="join-fields">
-        <label>邀请码<textarea name="invite" rows="3" maxlength="1300" placeholder="粘贴对方给你的整段邀请码" required></textarea></label>
+        <label><span id="pair-code-label">邀请码</span><textarea name="invite" rows="3" maxlength="1300" placeholder="粘贴对方给你的整段邀请码" required></textarea></label>
       </div>
       <div id="create-fields" hidden>
         <label>服务地址<input name="url" type="url" maxlength="512" placeholder="https://notes.example.com" disabled required></label>
@@ -147,9 +148,17 @@
       <button class="text-button" id="update-releases" type="button">查看发布页</button>
     </div>
   </section>
+  <section id="devices-panel" class="setup serve-panel" aria-labelledby="devices-title" hidden>
+    <h2 id="devices-title">我的设备</h2>
+    <ul id="device-list"></ul>
+    <p id="device-help">在另一台电脑打开纸条，选择「添加这台设备」并粘贴设备码。设备码 10 分钟内只能使用一次，请只发送给自己。</p>
+    <button class="primary" type="button" id="copy-device-invite">复制设备码</button>
+    <button class="primary" type="button" id="reset-device" hidden>重新添加本机</button>
+  </section>
   <footer>
     <p id="feedback" role="status" aria-live="polite"></p>
     <div class="footer-tools">
+      <button class="text-button" id="devices" type="button" hidden>我的设备</button>
       <button class="text-button" id="updates" type="button" hidden>软件更新</button>
       <button class="text-button" id="network" type="button" hidden>异地连接</button>
       <button class="text-button" id="hide" type="button">收起桌宠</button>
