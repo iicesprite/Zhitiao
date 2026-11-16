@@ -1,7 +1,8 @@
-const { app } = require('electron');
+const { app, net } = require('electron');
 const { readFileSync } = require('node:fs');
 const path = require('node:path');
 const { createUpdater, makeStore, releasePage } = require('./updater.cjs');
+const { createUpdateFetcher } = require('./update-network.cjs');
 const { version: bundledVersion } = require('../package.json');
 
 if (process.env.ZHITIAO_PROFILE) app.setPath('userData', path.resolve(process.env.ZHITIAO_PROFILE));
@@ -37,7 +38,9 @@ function boot() {
     const entry = selected.archive ? path.join(selected.archive, 'desktop', 'main.cjs') : path.join(__dirname, 'main.cjs');
     const { launch } = require(entry);
     if (typeof launch !== 'function') throw new Error('The update has no desktop entry point');
-    const updater = packaged ? createUpdater({ store, version: selected.version, runtime, publicKey }) : null;
+    const updater = packaged ? createUpdater({
+      store, version: selected.version, runtime, publicKey, fetcher: createUpdateFetcher(net)
+    }) : null;
     let startupTimer;
     const rollback = () => {
       clearTimeout(startupTimer);

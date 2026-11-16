@@ -1,9 +1,12 @@
 const assert = require('node:assert/strict');
 const { generateKeyPairSync } = require('node:crypto');
+const { EventEmitter } = require('node:events');
 const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const path = require('node:path');
+const { Readable } = require('node:stream');
 const { test } = require('node:test');
 const { repository, assetName, signUpdate } = require('../desktop/update-trust.cjs');
+const { createUpdateFetcher } = require('../desktop/update-network.cjs');
 const { makeStore, createUpdater } = require('../desktop/updater.cjs');
 
 const runtime = '45.3.2';
@@ -64,6 +67,86 @@ test('unsigned, altered and off-origin downloads never stage an update', async (
   await withGithub(store, { redirect: 'https://example.com/update.asar' }).check();
   assert.equal(store.read().pending, undefined);
   assert.equal(store.select(base).version, base);
+});
+
+test('the Electron transport leaves redirect validation to the updater and streams the signed archive', async (t) => {
+  const store = testStore(t);
+  const redirectedManifest = 'https://release-assets.githubusercontent.com/manifest';
+  const redirectedArchive = 'https://release-assets.githubusercontent.com/archive';
+  let archiveTarget = 'https://example.com/archive';
+  const requests = [];
+  const cancelled = [];
+  const net = {
+    request({ url, redirect }) {
+      assert.equal(redirect, 'manual');
+      requests.push(url);
+      const request = new EventEmitter();
+      request.abort = () => cancelled.push(url);
+      request.end = () => {
+        if (url === manifestUrl || url === assetsUrl + filename) {
+          request.emit('redirect', 302, 'GET', url === manifestUrl ? redirectedManifest : archiveTarget);
+          return;
+        }
+        assert.ok([redirectedManifest, redirectedArchive].includes(url));
+        const body = url === redirectedManifest ? Buffer.from(JSON.stringify(payload)) : bytes;
+        const response = Readable.from([body]);
+        response.statusCode = 200;
+        response.headers = { 'content-length': String(body.length) };
+        request.emit('response', response);
+      };
+      return request;
+    }
+  };
+  const updater = createUpdater({
+    store, version: base, runtime, publicKey: key.publicKey, fetcher: createUpdateFetcher(net)
+  });
+  const expected = [manifestUrl, redirectedManifest, assetsUrl + filename];
+  assert.equal((await updater.check()).readyVersion, null);
+  assert.deepEqual(requests.splice(0), expected);
+  assert.deepEqual(cancelled.splice(0), [manifestUrl, assetsUrl + filename]);
+  assert.equal(store.read().pending, undefined);
+
+  archiveTarget = redirectedArchive;
+  assert.equal((await updater.check()).readyVersion, version);
+  assert.deepEqual(requests, [...expected, redirectedArchive]);
+});
+
+test('a GitHub connection timeout gives a specific message and the next check can succeed', async (t) => {
+  const store = testStore(t);
+  let calls = 0;
+  const updater = createUpdater({
+    store, version: base, runtime, publicKey: key.publicKey,
+    fetcher: (url) => {
+      if (calls++ === 0) throw new Error('net::ERR_CONNECTION_TIMED_OUT');
+      return github()(url);
+    }
+  });
+  assert.match((await updater.check()).message, /连接 GitHub 超时.*系统代理/);
+  assert.equal((await updater.check()).readyVersion, version);
+});
+
+test('the deadline applies while downloading the response body', async (t) => {
+  const store = testStore(t);
+  const controller = new AbortController();
+  const setDeadline = t.mock.method(AbortSignal, 'timeout', () => controller.signal);
+  const updater = createUpdater({
+    store, version: base, runtime, publicKey: key.publicKey,
+    fetcher: async (url, { signal }) => {
+      if (url === manifestUrl) return Response.json(payload);
+      assert.equal(url, assetsUrl + filename);
+      assert.equal(signal, controller.signal);
+      return new Response(new ReadableStream({
+        pull() {
+          controller.abort(new DOMException('Deadline exceeded', 'TimeoutError'));
+          throw new Error('Response stream closed');
+        }
+      }));
+    }
+  });
+  assert.match((await updater.check()).message, /连接 GitHub 超时/);
+  assert.equal(setDeadline.mock.callCount(), 2);
+  assert.equal(setDeadline.mock.calls[1].arguments[0], 18_000);
+  assert.equal(store.read().pending, undefined);
 });
 
 test('an interrupted or crashing first run falls back to the previously confirmed update', (t) => {

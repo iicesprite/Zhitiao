@@ -6,6 +6,11 @@ const { repository, limit, newer, assetName, sha256, trustedUpdate } = require('
 const releasePage = 'https://github.com/' + repository + '/releases';
 const latestManifest = releasePage + '/latest/download/zhitiao-update.json';
 const packageHosts = new Set(['github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com']);
+const timeoutMessage = '连接 GitHub 超时，请检查网络或系统代理。';
+
+function isTimeout(error) {
+  return error?.name === 'TimeoutError' || /^net::ERR_(?:CONNECTION_)?TIMED_OUT$/.test(error?.message);
+}
 
 function atomicWrite(file, content) {
   const temp = file + '.tmp';
@@ -104,8 +109,18 @@ function makeStore({ directory, runtime, publicKey }) {
 }
 
 async function download(fetcher, target, { max, allowMissing = false }) {
-  let url = new URL(target);
   const signal = AbortSignal.timeout(18_000);
+  try {
+    return await readDownload(fetcher, target, { max, allowMissing, signal });
+  } finally {
+    // Electron can close an in-progress response stream on abort rather than
+    // passing the timeout reason through to its reader.
+    signal.throwIfAborted();
+  }
+}
+
+async function readDownload(fetcher, target, { max, allowMissing, signal }) {
+  let url = new URL(target);
   for (let redirects = 0; redirects <= 3; redirects++) {
     if (!packageHosts.has(url.hostname) || url.protocol !== 'https:' || url.username || url.password || url.port) {
       throw new Error('更新地址无效。');
@@ -181,7 +196,8 @@ function createUpdater({ store, version, runtime, publicKey, fetcher = fetch }) 
     running = Promise.resolve().then(() => {
       update('正在检查更新…');
       return checkRelease();
-    }).catch(() => update('暂时无法检查更新，稍后会重试。')).finally(() => { running = null; });
+    }).catch((error) => update(isTimeout(error) ? timeoutMessage : '暂时无法检查更新，稍后会重试。'))
+      .finally(() => { running = null; });
     return running;
   }
 
