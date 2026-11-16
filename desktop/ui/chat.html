@@ -137,6 +137,17 @@
       <button class="text-button" id="serve-dns" type="button">HTTPS 设置</button>
       <button class="text-button" id="serve-share" type="button">管理设备分享</button>
     </div>
+    <section class="aside" id="local-server-panel" aria-labelledby="local-server-title">
+      <strong id="local-server-title">本机纸条服务</strong>
+      <p id="server-directory-path" class="meta"></p>
+      <p id="server-database-path" class="meta" hidden></p>
+      <div class="actions">
+        <button type="button" id="server-directory">选择源码目录</button>
+        <button type="button" id="server-database">选择数据库</button>
+        <button type="button" class="primary" id="server-restart">重启纸条服务</button>
+      </div>
+      <p id="server-restart-status" role="status" aria-live="polite"></p>
+    </section>
   </section>
   <section id="updates-panel" class="setup serve-panel" aria-labelledby="updates-title" hidden>
     <h2 id="updates-title">软件更新</h2>

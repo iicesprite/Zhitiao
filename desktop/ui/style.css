@@ -75,6 +75,8 @@ p, h1, h2 { margin: 0; }
 #device-help { color: var(--ink-soft); margin-bottom: 12px; line-height: 1.5; }
 .serve-links { margin-top: 6px; gap: 0; }
 .serve-links button { padding: 5px 6px; font-size: 12px; }
+#local-server-panel { margin-top: 10px; }
+#server-restart-status:empty { display: none; }
 .empty-space { padding: 25px 8px; }
 .empty-space h2 { font-size: 17px; }
 .empty-space p { margin: 8px 0 16px; color: var(--ink-soft); }

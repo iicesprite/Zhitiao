@@ -7,6 +7,7 @@ const { imageLimit, imageType, imageTypeMessage } = require('../shared/media.cjs
 const { moods } = require('../shared/moods.cjs');
 const { invitation, pair, NoteLink, readdressInvitation } = require('./link.cjs');
 const { createTailscale, servePorts } = require('./tailscale.cjs');
+const { sourceEntry, restartLocalServer } = require('./local-server.cjs');
 
 if (process.env.ZHITIAO_PROFILE) app.setPath('userData', path.resolve(process.env.ZHITIAO_PROFILE));
 if (process.platform === 'win32') app.setAppUserModelId('local.zhitiao.desktop');
@@ -35,6 +36,8 @@ let pairing = false;
 let quitting = false;
 let mayQuit = false;
 let serveBusy = false;
+let localServerBusy = false;
+let quitAfterLocalServer = false;
 let updates, updateReleasePage, readyCallback;
 
 function readSettings() {
@@ -54,7 +57,8 @@ function readSettings() {
   }
   let serve;
   try { serve = servePorts(data.serve); } catch { serve = servePorts(); }
-  prefs = { hidden: Boolean(data.hidden), position: data.position, link: data.link, serve };
+  prefs = { hidden: Boolean(data.hidden), position: data.position, link: data.link, serve,
+    serverDirectory: data.serverDirectory, serverDatabase: data.serverDatabase };
 }
 
 function savePrefs() {
@@ -73,7 +77,8 @@ function saveConfig(next) {
 function viewState() {
   return { ...state, connection, hidden: prefs.hidden, configured: Boolean(config?.ready),
     canInvite: Boolean(config?.ready && config.role === 1 && !state.partner), role: config?.role,
-    moods, credentialsExpired, tailscaleAvailable: windowsServer, servePorts: prefs.serve, updates: updates?.state() };
+    moods, credentialsExpired, tailscaleAvailable: windowsServer, servePorts: prefs.serve, updates: updates?.state(),
+    serverDirectory: prefs.serverDirectory, serverDatabase: prefs.serverDatabase };
 }
 
 function broadcast() {
@@ -314,7 +319,7 @@ async function handleServe(action, payload) {
     await shell.openExternal(tailscalePages.get(action));
     return { ok: true };
   }
-  if (serveBusy) throw new Error('正在处理另一次 Tailscale 操作，请稍等。');
+  if (serveBusy || localServerBusy) throw new Error('正在处理连接操作，请稍等。');
   serveBusy = true;
   try {
     const task = action === 'serve-start' ? 'start' : action === 'serve-stop' ? 'stop' : 'status';
@@ -346,6 +351,40 @@ async function handleServe(action, payload) {
     return { ok: true, serve: result };
   } finally {
     serveBusy = false;
+  }
+}
+
+async function handleLocalServer(action, payload) {
+  if (serveBusy || localServerBusy) throw new Error('正在处理连接操作，请稍等。');
+  localServerBusy = true;
+  try {
+    if (action === 'server-directory' || action === 'server-database') {
+      const directory = action === 'server-directory';
+      const result = await dialog.showOpenDialog(chat, {
+        title: directory ? '选择纸条源码目录' : '选择现有纸条数据库',
+        properties: [directory ? 'openDirectory' : 'openFile']
+      });
+      if (result.canceled || !result.filePaths[0]) return { ok: true };
+      if (directory) {
+        const source = await sourceEntry(result.filePaths[0]).catch(() => { throw new Error('请选择包含 package.json 和 server 文件夹的纸条源码目录。'); });
+        prefs.serverDirectory = source.root;
+      } else {
+        prefs.serverDatabase = result.filePaths[0];
+      }
+      savePrefs();
+      broadcast();
+      return { ok: true };
+    }
+    if (!prefs.serverDirectory || !config?.ready) throw new Error('请先选择纸条源码目录并完成本机配对。');
+    const { localPort } = servePorts(payload);
+    const result = await restartLocalServer({
+      directory: prefs.serverDirectory, database: prefs.serverDatabase, config, port: localPort,
+      logFile: path.join(app.getPath('userData'), 'paper-server.log')
+    });
+    return { ok: true, message: '纸条服务 ' + result.version + ' 已在端口 ' + result.port + ' 启动。' };
+  } finally {
+    localServerBusy = false;
+    if (quitAfterLocalServer) app.quit();
   }
 }
 
@@ -509,6 +548,11 @@ function registerIpc() {
         case 'serve-share':
           if (!tailscale || event.sender !== chat.webContents) throw new Error('请从 Windows 的纸条面板操作。');
           return await handleServe(action, payload);
+        case 'server-directory':
+        case 'server-database':
+        case 'server-restart':
+          if (!windowsServer || event.sender !== chat.webContents) throw new Error('请从 Windows 的纸条面板操作。');
+          return await handleLocalServer(action, payload);
         case 'ui-ready':
           if (event.sender === chat.webContents) readyCallback?.();
           break;
@@ -541,6 +585,11 @@ function launch({ updater, releasePage, ready, failed } = {}) {
   app.on('second-instance', () => { if (chat) openChat(); });
   app.on('activate', (_, hasVisibleWindows) => { if (chat && !hasVisibleWindows) openChat(); });
   app.on('before-quit', (event) => {
+    if (localServerBusy) {
+      event.preventDefault();
+      quitAfterLocalServer = true;
+      return;
+    }
     quitting = true;
     updates?.stop();
     if (mayQuit || !link) return;

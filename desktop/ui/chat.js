@@ -21,6 +21,7 @@ let deviceSignature = null;
 let updateBusy = false;
 let initializedPorts = false;
 let serveLoading = false;
+let serverLoading = false;
 let serveState = null;
 const imageViews = new Map();
 const imageObserver = new IntersectionObserver((entries) => {
@@ -182,6 +183,7 @@ function render(info = data) {
   $('network').hidden = !info.tailscaleAvailable;
   $('network').textContent = showServe ? '返回纸条' : '异地连接';
   $('serve-panel').hidden = !showServe;
+  if (showServe) renderServe();
   $('updates').hidden = !info.updates;
   $('updates').textContent = showUpdates ? '返回纸条' : info.updates?.readyVersion ? '新版已就绪' : '软件更新';
   $('updates-panel').hidden = !showUpdates;
@@ -437,19 +439,26 @@ function renderServe() {
   const matches = Number(localPort) === serveState?.ports?.localPort
     && Number(httpsPort) === serveState?.ports?.httpsPort;
   const active = matches && serveState?.state === 'active';
-  $('serve-start').disabled = serveLoading || !valid || active;
-  $('serve-refresh').disabled = serveLoading || !valid;
+  const busy = serveLoading || serverLoading;
+  $('serve-start').disabled = busy || !valid || active;
+  $('serve-refresh').disabled = busy || !valid;
   $('serve-stop').hidden = !active;
-  $('serve-stop').disabled = serveLoading;
+  $('serve-stop').disabled = busy;
   $('serve-address').hidden = !active;
   $('serve-url').value = active ? serveState.url : '';
-  $('serve-copy-invite').disabled = serveLoading || !active || !serveState.canInvite;
-  $('serve-copy-url').disabled = serveLoading;
-  for (const field of form.querySelectorAll('input')) field.readOnly = serveLoading;
+  $('serve-copy-invite').disabled = busy || !active || !serveState.canInvite;
+  $('serve-copy-url').disabled = busy;
+  for (const field of form.querySelectorAll('input')) field.readOnly = busy;
+  $('server-directory-path').textContent = data?.serverDirectory ?? '选择运行纸条服务的源码目录。';
+  $('server-database-path').hidden = !data?.serverDatabase;
+  $('server-database-path').textContent = data?.serverDatabase ?? '';
+  $('server-directory').disabled = busy;
+  $('server-database').disabled = busy;
+  $('server-restart').disabled = busy || !valid || !data?.configured || !data.serverDirectory;
 }
 
 async function serveAction(action) {
-  if (serveLoading) return;
+  if (serveLoading || serverLoading) return;
   serveLoading = true;
   $('serve-status').textContent = action === 'serve-start' ? '正在启动 Tailscale Serve…' : '正在检查…';
   renderServe();
@@ -467,6 +476,23 @@ async function serveAction(action) {
     $('serve-status').textContent = '暂时无法操作 Tailscale，请重试。';
   } finally {
     serveLoading = false;
+    renderServe();
+  }
+}
+
+async function localServerAction(action) {
+  if (serveLoading || serverLoading) return;
+  serverLoading = true;
+  const status = $('server-restart-status');
+  status.textContent = action === 'server-restart' ? '正在重启纸条服务…' : '';
+  renderServe();
+  try {
+    const result = await window.paper.act(action, currentPorts());
+    status.textContent = result.message ?? result.error ?? '';
+  } catch {
+    status.textContent = '暂时无法操作纸条服务。';
+  } finally {
+    serverLoading = false;
     renderServe();
   }
 }
@@ -500,6 +526,9 @@ for (const [button, action] of [
 }
 for (const action of ['serve-install', 'serve-dns', 'serve-share']) {
   $(action).addEventListener('click', () => act(action));
+}
+for (const action of ['server-directory', 'server-database', 'server-restart']) {
+  $(action).addEventListener('click', () => localServerAction(action));
 }
 
 $('updates').addEventListener('click', () => {
